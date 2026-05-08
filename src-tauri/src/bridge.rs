@@ -262,24 +262,26 @@ const DEEPSEEK_BRIDGE: &str = r#"
 "#;
 
 // ── Grok (grok.com) ───────────────────────────────────────────────────────────
-// Input:  textarea (Grok uses a standard textarea as of early 2024)
-// Note:   Grok is embedded in X's infrastructure — selectors may be fragile.
-//
-// VERIFY: This one needs the most attention. Open grok.com in a browser,
-// inspect the input element, and confirm the selectors below.
+// Input:  textarea — Grok uses a standard textarea
+// Submit: click the send button
+// VERIFY: Open grok.com in DevTools to confirm selectors
 const GROK_BRIDGE: &str = r#"
 (function grokInit() {
     const INPUT_SELECTORS = [
+        'textarea[data-testid="grok-compose-input"]',
         'textarea[placeholder*="Ask"]',
-        'textarea[placeholder*="message"]',
-        'textarea[aria-label*="message"]',
-        'textarea',   // last-resort
+        'textarea[placeholder*="Grok"]',
+        'textarea[placeholder*="anything"]',
+        'textarea[class*="compose"]',
+        'textarea',   // last resort
     ];
 
     const SEND_BTN_SELECTORS = [
+        'button[data-testid="grok-compose-send"]',
         'button[aria-label*="Send"]',
         'button[type="submit"]',
-        'button[data-testid="send-button"]',
+        'button[class*="send"]',
+        'button[class*="Send"]',
     ];
 
     function setReactTextareaValue(el, value) {
@@ -287,15 +289,15 @@ const GROK_BRIDGE: &str = r#"
             window.HTMLTextAreaElement.prototype, 'value'
         ).set;
         nativeSetter.call(el, value);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     window.__orchestratorBridge.sendMessage = function(text) {
         const input = trySelectors(INPUT_SELECTORS);
         if (!input) {
-            console.error('[OrchestratorBridge:grok] input not found. Check INPUT_SELECTORS.');
-            window.__orchestratorBridge.report('error', { message: 'input selector failed' });
+            console.error('[OrchestratorBridge:grok] input not found — open DevTools on grok.com to find the correct selector');
+            window.__orchestratorBridge.report('error', { message: 'grok input selector failed' });
             return;
         }
 
@@ -307,53 +309,51 @@ const GROK_BRIDGE: &str = r#"
             if (sendBtn) {
                 sendBtn.click();
             } else {
+                // Fallback: Enter key
                 input.dispatchEvent(new KeyboardEvent('keydown', {
                     key: 'Enter', code: 'Enter', keyCode: 13,
-                    bubbles: true, cancelable: true,
-                    shiftKey: false,
+                    bubbles: true, cancelable: true, shiftKey: false,
                 }));
             }
             window.__orchestratorBridge.report('generating', {});
             watchForCompletion();
-        }, 200);
+        }, 300);
     };
 
     function watchForCompletion() {
         let settled = false;
-        let lastMutationTime = Date.now();
-        const SETTLE_MS = 2500;
+        let lastMutation = Date.now();
+        const SETTLE_MS = 3000;
 
-        const responseArea = document.querySelector('main') || document.body;
-
-        const observer = new MutationObserver(() => {
-            lastMutationTime = Date.now();
-        });
-        observer.observe(responseArea, {
-            childList: true, subtree: true, characterData: true,
-        });
+        const area = document.querySelector('main') || document.body;
+        const observer = new MutationObserver(() => { lastMutation = Date.now(); });
+        observer.observe(area, { childList: true, subtree: true, characterData: true });
 
         const poll = setInterval(() => {
-            if (Date.now() - lastMutationTime > SETTLE_MS) {
+            if (Date.now() - lastMutation > SETTLE_MS) {
                 clearInterval(poll);
                 observer.disconnect();
-                if (!settled) {
-                    settled = true;
-                    extractAndReport();
-                }
+                if (!settled) { settled = true; extractAndReport(); }
             }
         }, 300);
     }
 
     function extractAndReport() {
-        // VERIFY: Grok's output selector. Inspect in DevTools.
-        const allMsgs = document.querySelectorAll(
-            '[class*="message"]:not([class*="user"]), [data-testid*="response"]'
-        );
-        const outputEl = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
+        // Try multiple output selectors — Grok's DOM changes frequently
+        const candidates = document.querySelectorAll([
+            '[data-testid*="response"]',
+            '[class*="message"]:not([class*="user"])',
+            '[class*="assistant"]',
+            '[class*="response"]',
+            'article',
+        ].join(','));
+
+        const outputEl = candidates.length > 0 ? candidates[candidates.length - 1] : null;
         const output = outputEl
             ? outputEl.innerText.trim()
-            : '[OrchestratorBridge:grok] output selector failed — check OUTPUT_SELECTORS';
+            : '[OrchestratorBridge:grok] output selector failed — check DevTools on grok.com';
 
+        if (!outputEl) console.error('[OrchestratorBridge:grok] could not find output element');
         window.__orchestratorBridge.report('output', { output });
     }
 })();

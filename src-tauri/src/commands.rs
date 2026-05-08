@@ -3,7 +3,6 @@
 use crate::bridge::get_bridge_script;
 use crate::bridge_server::BRIDGE_PORT;
 use crate::state::{AppState, PanelInfo, PanelStatus};
-
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Debug, serde::Serialize)]
@@ -190,8 +189,11 @@ pub fn open_panel(
     .min_inner_size(600.0, 500.0)
     .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     .initialization_script(&full_init_script)
-    // Windows are HIDDEN by default — they run in background.
-    // User can show them via the "VIEW" button on each card.
+    // Persist cookies/session per panel so logins and CAPTCHA solves survive restarts
+    .data_directory(dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vibe-orchestrator")
+        .join(&panel_id))
     .visible(false)
     .build();
 
