@@ -89,6 +89,38 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     if (document.readyState === 'complete') {{ fireReady(); }}
     else {{ window.addEventListener('load', fireReady); }}
 
+    // Auto-diagnostic: 4 seconds after load, dump DOM structure to /tmp
+    // so the dev can read it without opening DevTools
+    window.addEventListener('load', function() {{
+        setTimeout(() => {{
+            const diag = {{
+                url: location.href,
+                secureContext: window.isSecureContext,
+                webkit: !!window.webkit,
+                tauriInternals: !!window.__TAURI_INTERNALS__,
+                textareas: Array.from(document.querySelectorAll('textarea')).slice(0,5).map(e => ({{
+                    ph: (e.placeholder||'').slice(0,60), cls: (e.className||'').slice(0,60),
+                    id: e.id, vis: !!e.offsetParent
+                }})),
+                contenteditables: Array.from(document.querySelectorAll('[contenteditable]')).slice(0,5).map(e => ({{
+                    label: (e.getAttribute('aria-label')||'').slice(0,60),
+                    cls: (e.className||'').slice(0,60), tag: e.tagName, vis: !!e.offsetParent
+                }})),
+                shadowHosts: Array.from(document.querySelectorAll('*')).filter(e=>e.shadowRoot).map(e=>e.tagName).slice(0,10),
+                buttons: Array.from(document.querySelectorAll('button')).filter(e=>e.offsetParent).slice(0,12).map(e=>(({{
+                    label: (e.getAttribute('aria-label')||'').slice(0,40),
+                    txt: (e.innerText||'').slice(0,20)
+                }}))),
+                responseEls: ['model-response','message-content','[data-message-author-role]','[class*="markdown"]','[class*="response"]'].map(sel => {{
+                    try {{ const els = document.querySelectorAll(sel); return {{sel, count: els.length, sampleClass: els[0]?.className?.slice(0,60)}}; }}
+                    catch(ex) {{ return {{sel, err: ex.message}}; }}
+                }})
+            }};
+            const img = new Image();
+            img.src = `http://127.0.0.1:${{BRIDGE_PORT}}/diag?panel=${{PANEL_ID}}&data=${{encodeURIComponent(JSON.stringify(diag))}}`;
+        }}, 4000);
+    }});
+
     console.log('[OrchestratorBridge] injected for', PANEL_ID);
 }})();
 "#,

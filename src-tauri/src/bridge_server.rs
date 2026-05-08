@@ -169,7 +169,21 @@ fn dispatch_event(app: &AppHandle, event: BridgeEvent) {
     }
 }
 
-// ── Server startup ────────────────────────────────────────────────────────────
+// ── Diagnostic dump ───────────────────────────────────────────────────────────
+// GET /diag?panel=X&data=... — receives DOM info from injected JS on page load.
+// Writes to /tmp/vibe-diag-{panel}.json for Desktop Commander to read.
+// axum's Query<> handles URL-decoding automatically — no extra crate needed.
+
+#[derive(Deserialize)]
+struct DiagParams { panel: Option<String>, data: String }
+
+async fn handle_diag(Query(params): Query<DiagParams>) -> impl IntoResponse {
+    let panel = params.panel.as_deref().unwrap_or("unknown");
+    let path   = format!("/tmp/vibe-diag-{panel}.json");
+    let _      = std::fs::write(&path, params.data.as_bytes());
+    println!("[bridge_server] diagnostic saved → {path}");
+    (StatusCode::OK, [("Content-Type", "text/plain"), ("Access-Control-Allow-Origin", "*")], "ok")
+}
 
 pub async fn start(app: AppHandle) {
     let cors = CorsLayer::new()
@@ -185,6 +199,7 @@ pub async fn start(app: AppHandle) {
     let router = Router::new()
         .route("/bridge/event", post(handle_post_event))
         .route("/ping",         get(handle_ping))
+        .route("/diag",         get(handle_diag))
         .layer(cors)
         .with_state(state);
 
