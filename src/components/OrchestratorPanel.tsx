@@ -155,8 +155,8 @@ function PromptComposer() {
   );
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd+Enter or Ctrl+Enter to send
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    // Enter alone = send. Shift+Enter = newline.
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (draft.trim() && hasOpenPanels && !hasGenerating) {
         void sendPrompt(draft);
@@ -172,7 +172,7 @@ function PromptComposer() {
         onKeyDown={handleKeyDown}
         placeholder={
           hasOpenPanels
-            ? 'Type a prompt… ⌘↵ to send'
+            ? 'Type a prompt… Enter to send, Shift+Enter for newline'
             : 'Open at least one panel first'
         }
         disabled={!hasOpenPanels || hasGenerating}
@@ -190,7 +190,7 @@ function PromptComposer() {
           opacity: (draft.trim() && hasOpenPanels && !hasGenerating) ? 1 : 0.4,
         }}
       >
-        {hasGenerating ? '▌ WAIT…' : 'SEND ⌘↵'}
+        {hasGenerating ? '▌ WAIT…' : 'SEND ↵'}
       </button>
     </div>
   );

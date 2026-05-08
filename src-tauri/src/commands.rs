@@ -136,24 +136,31 @@ pub fn open_panel(
     }}
 
     function report(type, extra) {{
-        const body = JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }});
-        // Try native Tauri IPC first (bypasses CSP entirely)
+        const payload = JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }});
+
+        // Strategy 1: Image beacon — bypasses connect-src CSP because it uses img-src.
+        // Chunks large payloads (AI responses can be long) across multiple requests.
+        reportViaImage(payload);
+
+        // Strategy 2: also try native Tauri IPC in parallel (works if __TAURI_INTERNALS__ is available)
         try {{
-            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+            if (window.__TAURI_INTERNALS__?.invoke) {{
                 window.__TAURI_INTERNALS__.invoke('bridge_event', {{ type, panelId: PANEL_ID, ...extra }})
-                    .catch(() => reportViaFetch(body));
-                return;
+                    .catch(() => {{}});
             }}
         }} catch(e) {{}}
-        reportViaFetch(body);
     }}
 
-    function reportViaFetch(body) {{
-        fetch(BRIDGE_URL, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body,
-        }}).catch(err => console.error('[OrchestratorBridge] fetch failed:', err));
+    function reportViaImage(json) {{
+        const CHUNK  = 1800; // safe URL-encoded chunk size
+        const total  = Math.ceil(json.length / CHUNK);
+        const id     = `${{Date.now()}}-${{Math.random().toString(36).slice(2)}}`;
+
+        for (let i = 0; i < total; i++) {{
+            const slice = json.slice(i * CHUNK, (i + 1) * CHUNK);
+            const img   = new Image();
+            img.src     = `http://127.0.0.1:${{BRIDGE_PORT}}/ping?id=${{id}}&i=${{i}}&t=${{total}}&d=${{encodeURIComponent(slice)}}`;
+        }}
     }}
 
     window.__orchestratorBridge = {{ panelId: PANEL_ID, report, trySelectors,
