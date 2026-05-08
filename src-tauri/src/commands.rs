@@ -21,15 +21,12 @@ impl<T: serde::Serialize> CmdResult<T> {
 // Most importantly: window.webkit.messageHandlers — present in WKWebView, absent in real browsers.
 const ANTI_BOT_SCRIPT: &str = r#"
 (function() {
+    // Remove WebDriver flag — biggest automation detector
     try { Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e) {}
 
-    // THIS IS THE BIG ONE: Cloudflare checks for window.webkit.messageHandlers
-    // Real Safari has window.webkit but no messageHandlers. WKWebView has both.
-    try {
-        if (window.webkit && window.webkit.messageHandlers) {
-            Object.defineProperty(window, 'webkit', { get: () => ({}), configurable: true, enumerable: false });
-        }
-    } catch(e) {}
+    // NOTE: We do NOT hide window.webkit.messageHandlers because Tauri's native
+    // IPC bridge depends on it. Without it, __TAURI_INTERNALS__.invoke() fails,
+    // which is our primary channel for getting output back from AI panels.
 
     try {
         Object.defineProperty(navigator, 'plugins', {
