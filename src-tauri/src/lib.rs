@@ -34,6 +34,8 @@ pub fn run() {
             commands::get_bridge_port,
             commands::open_panel,
             commands::close_panel,
+            commands::show_panel,
+            commands::hide_panel,
             commands::send_to_panel,
             commands::reset_panel_output,
             commands::bridge_event,
