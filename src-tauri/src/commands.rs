@@ -152,6 +152,8 @@ pub fn open_panel(
     );
 
     // Create the WebviewWindow
+    // user_agent: spoof a real Safari/macOS browser so sites don't block the WebView.
+    // Claude.ai and Google both detect embedded WebViews without this.
     let result = WebviewWindowBuilder::new(
         &app,
         &panel_id,
@@ -160,8 +162,8 @@ pub fn open_panel(
     .title(format!("Vibe — {panel_id}"))
     .inner_size(980.0, 820.0)
     .min_inner_size(600.0, 500.0)
+    .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     .initialization_script(&full_init_script)
-    // Disable Tauri's default CSP override so the external site loads normally
     .build();
 
     match result {
