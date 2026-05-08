@@ -60,8 +60,8 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --locked
+        run: cargo check
 
       - name: clippy
         working-directory: src-tauri
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
