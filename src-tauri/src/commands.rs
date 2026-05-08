@@ -69,7 +69,38 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
 
     // Image beacon: bypasses connect-src CSP — img-src is usually unrestricted
     function report(type, extra) {{
-        const json  = JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }});
+        const payload = {{ type, panel_id: PANEL_ID, ...extra }};
+
+        // PRIMARY: native Tauri IPC via WKScriptMessageHandler — bypasses ALL CSP
+        // because it goes through native WebKit IPC, not HTTP.
+        try {{
+            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+                window.__TAURI_INTERNALS__.invoke('bridge_event', {{
+                    type,
+                    panelId: PANEL_ID,
+                    output:  extra && extra.output  ? extra.output  : null,
+                    message: extra && extra.message ? extra.message : null,
+                }})
+                .then(() => {{
+                    // IPC worked — log it
+                    console.log('[OrchestratorBridge] IPC ok:', type, PANEL_ID);
+                }})
+                .catch(err => {{
+                    console.warn('[OrchestratorBridge] IPC failed, falling back to beacon:', err);
+                    reportViaBeacon(payload);
+                }});
+                return;
+            }}
+        }} catch(e) {{
+            console.warn('[OrchestratorBridge] IPC exception:', e);
+        }}
+
+        // FALLBACK: Image beacon (works when CSP allows img-src to localhost)
+        reportViaBeacon(payload);
+    }}
+
+    function reportViaBeacon(payload) {{
+        const json  = JSON.stringify(payload);
         const CHUNK = 1800;
         const total = Math.ceil(json.length / CHUNK);
         const id    = `${{Date.now()}}-${{Math.random().toString(36).slice(2)}}`;

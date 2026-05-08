@@ -245,79 +245,93 @@ const DEEPSEEK_BRIDGE: &str = r#"
 // ── Grok (grok.com) ───────────────────────────────────────────────────────────
 const GROK_BRIDGE: &str = r#"
 (function grokInit() {
-    function setReactValue(el, value) {
-        try {
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLTextAreaElement.prototype, 'value'
-            ).set;
-            nativeSetter.call(el, value);
-            el.dispatchEvent(new Event('input',  { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-        } catch(e) { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }
-    }
 
     function findInput() {
-        // Try textarea first (most likely)
-        const textareas = document.querySelectorAll('textarea');
-        for (const t of textareas) {
-            if (t.offsetParent !== null) return t; // visible textarea
-        }
-        // Fallback: contenteditable
-        const editables = document.querySelectorAll('div[contenteditable="true"]');
-        for (const e of editables) {
-            if (e.offsetParent !== null) return e;
-        }
+        // offsetParent can be null even for visible elements in some stacking contexts
+        // So try ALL textareas, not just ones with offsetParent
+        const all = document.querySelectorAll('textarea');
+        if (all.length > 0) return all[all.length - 1]; // last textarea is usually the input
+
+        // Fallback: any contenteditable
+        const divs = document.querySelectorAll('div[contenteditable="true"]');
+        if (divs.length > 0) return divs[divs.length - 1];
         return null;
     }
 
-    function findSendButton() {
-        const btns = document.querySelectorAll('button');
-        for (const btn of btns) {
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            const type  = btn.getAttribute('type') || '';
-            if (label.includes('send') || type === 'submit') return btn;
+    function setInputValue(el, text) {
+        el.focus();
+        el.click();
+
+        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+            // React controlled input: must use native value setter
+            try {
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value'
+                ).set;
+                nativeSetter.call(el, text);
+            } catch(e) { el.value = text; }
+
+            // Fire all the events React listens to
+            ['input', 'change', 'keyup'].forEach(evt => {
+                el.dispatchEvent(new Event(evt, { bubbles: true, cancelable: true }));
+            });
+        } else {
+            // contenteditable
+            el.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+            document.execCommand('insertText', false, text);
         }
-        // Try SVG buttons (Grok uses icon buttons)
-        for (const btn of btns) {
-            if (btn.querySelector('svg') && btn.offsetParent !== null) {
-                // Last visible button with SVG is usually send
-                // Return the last one as fallback
-                const allVisible = Array.from(btns).filter(b => b.querySelector('svg') && b.offsetParent);
-                if (allVisible.length > 0) return allVisible[allVisible.length - 1];
-            }
-        }
-        return null;
     }
 
-    window.__orchestratorBridge.sendMessage = function(text) {
-        const input = findInput();
-        if (!input) {
-            console.error('[OrchestratorBridge:grok] no input found');
-            window.__orchestratorBridge.report('error', { message: 'grok input not found' });
+    function submit(el) {
+        // Try buttons first
+        const btns = Array.from(document.querySelectorAll('button'));
+        const sendBtn = btns.find(b => {
+            const label = (b.getAttribute('aria-label') || '').toLowerCase();
+            const txt   = (b.innerText || '').toLowerCase();
+            return label.includes('send') || txt.includes('send') || b.type === 'submit';
+        });
+
+        if (sendBtn) {
+            sendBtn.click();
             return;
         }
 
-        if (input.tagName === 'TEXTAREA') {
-            setReactValue(input, text);
-        } else {
-            input.focus();
-            document.execCommand('selectAll', false, null);
-            document.execCommand('insertText', false, text);
-        }
+        // Enter key
+        ['keydown', 'keypress', 'keyup'].forEach(evt => {
+            el.dispatchEvent(new KeyboardEvent(evt, {
+                key: 'Enter', code: 'Enter', keyCode: 13,
+                which: 13, bubbles: true, cancelable: true
+            }));
+        });
+    }
 
-        setTimeout(() => {
-            const btn = findSendButton();
-            if (btn) {
-                btn.click();
-            } else {
-                input.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter', code: 'Enter', keyCode: 13,
-                    bubbles: true, cancelable: true, shiftKey: false,
-                }));
+    window.__orchestratorBridge.sendMessage = function(text) {
+        // Retry up to 5 times in case page isn't ready
+        let attempts = 0;
+        function tryIt() {
+            attempts++;
+            const input = findInput();
+            if (!input) {
+                if (attempts < 5) {
+                    console.warn('[OrchestratorBridge:grok] no input found, retry', attempts);
+                    setTimeout(tryIt, 1000);
+                } else {
+                    window.__orchestratorBridge.report('error', { message: 'grok: no input after 5 attempts' });
+                }
+                return;
             }
-            window.__orchestratorBridge.report('generating', {});
-            watchForCompletion();
-        }, 400);
+
+            setInputValue(input, text);
+
+            setTimeout(() => {
+                submit(input);
+                window.__orchestratorBridge.report('generating', {});
+                watchForCompletion();
+            }, 500);
+        }
+        tryIt();
     };
 
     window.__orchestratorBridge.captureOutput = captureOutput;
@@ -325,14 +339,17 @@ const GROK_BRIDGE: &str = r#"
     function watchForCompletion() {
         let lastMutation = Date.now();
         let settled = false;
-        const SETTLE_MS = 3500;
+        const SETTLE_MS  = 3500;
+        const MAX_WAIT   = 90000; // 90 second hard timeout
+        const startTime  = Date.now();
 
         const area = document.querySelector('main') || document.body;
         const observer = new MutationObserver(() => { lastMutation = Date.now(); });
         observer.observe(area, { childList: true, subtree: true, characterData: true });
 
         const poll = setInterval(() => {
-            if (Date.now() - lastMutation > SETTLE_MS) {
+            const elapsed = Date.now() - startTime;
+            if (Date.now() - lastMutation > SETTLE_MS || elapsed > MAX_WAIT) {
                 clearInterval(poll);
                 observer.disconnect();
                 if (!settled) { settled = true; captureOutput(); }
@@ -341,22 +358,19 @@ const GROK_BRIDGE: &str = r#"
     }
 
     function captureOutput() {
-        // Grab all visible text blocks, pick the last meaningful one
         const allBlocks = Array.from(document.querySelectorAll(
-            '[class*="message"], [class*="response"], [class*="assistant"], article, [role="article"]'
-        )).filter(el => el.offsetParent !== null);
+            '[class*="message"], [class*="response"], [class*="assistant"], article, [role="article"], [data-testid]'
+        )).filter(el => el.innerText?.trim().length > 10);
 
         let output = '';
         for (let i = allBlocks.length - 1; i >= 0; i--) {
             const text = allBlocks[i].innerText?.trim();
             if (text && text.length > 10) { output = text; break; }
         }
-
         if (!output) {
             const main = document.querySelector('main');
-            if (main) output = main.innerText.trim().slice(-3000);
+            if (main) output = main.innerText.trim().slice(-4000);
         }
-
         window.__orchestratorBridge.report('output', { output: output || '[Grok: output capture failed]' });
     }
 })();
