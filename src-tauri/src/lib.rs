@@ -36,6 +36,7 @@ pub fn run() {
             commands::close_panel,
             commands::send_to_panel,
             commands::reset_panel_output,
+            commands::bridge_event,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vibe-orchestrator");

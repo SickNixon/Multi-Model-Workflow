@@ -1,14 +1,5 @@
 // src-tauri/src/commands.rs
 // All Tauri commands exposed to the frontend via invoke().
-// Each command is a thin layer — real logic lives in state.rs / bridge_server.rs.
-//
-// COMMAND INVENTORY:
-//   get_panel_states     → returns current state of all panels
-//   open_panel           → creates a WebviewWindow for an AI site
-//   close_panel          → closes a WebviewWindow
-//   send_to_panel        → injects text + submits in a WebviewWindow
-//   reset_panel_output   → clears last_output for a panel
-//   get_bridge_port      → returns the HTTP bridge port (for UI display)
 
 use crate::bridge::get_bridge_script;
 use crate::bridge_server::BRIDGE_PORT;
@@ -37,11 +28,25 @@ impl<T: serde::Serialize> CmdResult<T> {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 /// Return current state of all known panels.
+/// Also reconciles: if a window no longer exists but we think it's open, mark Closed.
 #[tauri::command]
-pub fn get_panel_states(state: State<'_, AppState>) -> CmdResult<Vec<PanelInfo>> {
+pub fn get_panel_states(
+    app:   AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<PanelInfo>> {
+    // Reconcile stale state — if window was closed by the user via the X button,
+    // the AppState won't know until we check here.
+    {
+        let mut panels = state.panels.lock().unwrap();
+        for panel in panels.values_mut() {
+            if panel.status.is_open() && app.get_webview_window(&panel.id).is_none() {
+                panel.status = PanelStatus::Closed;
+            }
+        }
+    }
+
     let panels = state.panels.lock().unwrap();
     let mut list: Vec<PanelInfo> = panels.values().cloned().collect();
-    // Stable ordering: use the ALL_PANELS const order
     list.sort_by_key(|p| {
         crate::state::ALL_PANELS
             .iter()
@@ -51,7 +56,7 @@ pub fn get_panel_states(state: State<'_, AppState>) -> CmdResult<Vec<PanelInfo>>
     CmdResult::success(list)
 }
 
-/// Return the bridge HTTP port (so the UI can display it).
+/// Return the bridge HTTP port.
 #[tauri::command]
 pub fn get_bridge_port() -> CmdResult<u16> {
     CmdResult::success(BRIDGE_PORT)
@@ -60,11 +65,10 @@ pub fn get_bridge_port() -> CmdResult<u16> {
 /// Open an AI panel WebviewWindow. Idempotent — calling twice just focuses.
 #[tauri::command]
 pub fn open_panel(
-    app:     AppHandle,
-    state:   State<'_, AppState>,
+    app:      AppHandle,
+    state:    State<'_, AppState>,
     panel_id: String,
 ) -> CmdResult<()> {
-    // Validate panel ID
     let (url, bridge_script) = {
         let panels = state.panels.lock().unwrap();
         match panels.get(&panel_id) {
@@ -83,67 +87,85 @@ pub fn open_panel(
         return CmdResult::success(());
     }
 
-    // Parse URL
     let parsed_url: tauri::Url = match url.parse() {
         Ok(u) => u,
         Err(e) => return CmdResult::fail(format!("Bad URL: {e}")),
     };
 
-    // Build the full initialization script:
-    // 1. Inject the bridge sentinel + site-specific logic
-    // 2. Wrap in a self-invoking function to avoid polluting global scope further
+    // ── Full initialization script ──
+    // The outer IIFE provides shared helpers (trySelectors, report).
+    // report() tries native Tauri IPC first, falls back to fetch.
+    // This ensures it works even when the site's CSP blocks localhost fetch.
     let full_init_script = format!(
         r#"
-// ── Vibe Orchestrator Bridge — initialisation script ──
-// This runs before the page's own JS on every navigation.
 (function() {{
     const PANEL_ID    = {panel_id_json};
     const BRIDGE_PORT = {port};
     const BRIDGE_URL  = `http://127.0.0.1:${{BRIDGE_PORT}}/bridge/event`;
 
-    // ── Shared helper: try selectors in order, return first match ──
     function trySelectors(selectors) {{
         for (const sel of selectors) {{
             try {{
                 const el = document.querySelector(sel);
                 if (el) return el;
-            }} catch(e) {{ /* invalid selector — skip */ }}
+            }} catch(e) {{}}
         }}
         return null;
     }}
 
-    // Report helper — fire-and-forget POST to our local bridge server
+    // report(): try native Tauri IPC first (bypasses CSP), fall back to fetch
     function report(type, extra) {{
+        const payload = JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }});
+
+        // Attempt 1: Tauri native IPC (works even when CSP blocks fetch)
+        try {{
+            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+                window.__TAURI_INTERNALS__.invoke('bridge_event', {{ type, panelId: PANEL_ID, ...extra }})
+                    .catch(() => {{
+                        // Tauri invoke failed, try fetch
+                        reportViaFetch(payload);
+                    }});
+                return;
+            }}
+        }} catch(e) {{}}
+
+        // Attempt 2: fetch to local bridge server
+        reportViaFetch(payload);
+    }}
+
+    function reportViaFetch(payload) {{
         fetch(BRIDGE_URL, {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }})
+            body: payload,
         }}).catch(err => {{
-            console.error('[OrchestratorBridge] report failed:', err);
+            console.error('[OrchestratorBridge] both IPC and fetch failed:', err);
         }});
     }}
 
-    // Attach the bridge object — site-specific code fills in sendMessage()
     window.__orchestratorBridge = {{
         panelId: PANEL_ID,
         report,
         trySelectors,
-        // Placeholder — overwritten by site-specific init below
         sendMessage: function(text) {{
             console.error('[OrchestratorBridge] sendMessage not implemented for', PANEL_ID);
         }},
     }};
 
-    // Site-specific bridge implementation
     {bridge_script}
 
-    // Tell the Rust backend we're alive
-    // Use a small delay to let the page DOM settle first
-    window.addEventListener('load', function() {{
-        setTimeout(() => report('ready', {{}}), 800);
-    }});
+    // Fire ready after page settles
+    function fireReady() {{
+        setTimeout(() => report('ready', {{}}), 1200);
+    }}
 
-    console.log('[OrchestratorBridge] sentinel injected for', PANEL_ID);
+    if (document.readyState === 'complete') {{
+        fireReady();
+    }} else {{
+        window.addEventListener('load', fireReady);
+    }}
+
+    console.log('[OrchestratorBridge] injected for', PANEL_ID);
 }})();
 "#,
         panel_id_json = serde_json::to_string(&panel_id).unwrap(),
@@ -151,9 +173,6 @@ pub fn open_panel(
         bridge_script = bridge_script,
     );
 
-    // Create the WebviewWindow
-    // user_agent: spoof a real Safari/macOS browser so sites don't block the WebView.
-    // Claude.ai and Google both detect embedded WebViews without this.
     let result = WebviewWindowBuilder::new(
         &app,
         &panel_id,
@@ -167,8 +186,37 @@ pub fn open_panel(
     .build();
 
     match result {
-        Ok(_) => {
+        Ok(_win) => {
             state.set_status(&panel_id, PanelStatus::Loading);
+
+            // Fallback: if the JS bridge never fires (CSP blocks both IPC and fetch),
+            // optimistically mark the panel Idle after 10 seconds so the UI isn't stuck.
+            let state_clone = app.state::<AppState>().clone();
+            let panel_id_clone = panel_id.clone();
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                // Only promote if still Loading (don't override a real ready/error)
+                let should_promote = {
+                    let panels = state_clone.panels.lock().unwrap();
+                    matches!(
+                        panels.get(&panel_id_clone).map(|p| &p.status),
+                        Some(PanelStatus::Loading)
+                    )
+                };
+                if should_promote && app_clone.get_webview_window(&panel_id_clone).is_some() {
+                    state_clone.set_status(&panel_id_clone, PanelStatus::Idle);
+                    let _ = app_clone.emit(
+                        crate::bridge_server::EVENT_PANEL_READY,
+                        crate::bridge_server::PanelEventPayload {
+                            panel_id: panel_id_clone,
+                            output: None,
+                            message: None,
+                        },
+                    );
+                }
+            });
+
             CmdResult::success(())
         }
         Err(e) => CmdResult::fail(format!("WebviewWindowBuilder failed: {e}")),
@@ -178,8 +226,8 @@ pub fn open_panel(
 /// Close a panel WebviewWindow.
 #[tauri::command]
 pub fn close_panel(
-    app:     AppHandle,
-    state:   State<'_, AppState>,
+    app:      AppHandle,
+    state:    State<'_, AppState>,
     panel_id: String,
 ) -> CmdResult<()> {
     if let Some(win) = app.get_webview_window(&panel_id) {
@@ -187,26 +235,25 @@ pub fn close_panel(
         state.set_status(&panel_id, PanelStatus::Closed);
         CmdResult::success(())
     } else {
-        CmdResult::fail(format!("Panel {panel_id} is not open"))
+        // Window already gone — just sync state
+        state.set_status(&panel_id, PanelStatus::Closed);
+        CmdResult::success(())
     }
 }
 
-/// Send a message to a panel — injects it into the input and submits.
-/// The panel must be open and in Idle or Done state.
+/// Send a message to a panel — injects it and submits.
 #[tauri::command]
 pub fn send_to_panel(
-    app:     AppHandle,
-    state:   State<'_, AppState>,
+    app:      AppHandle,
+    state:    State<'_, AppState>,
     panel_id: String,
-    message: String,
+    message:  String,
 ) -> CmdResult<()> {
     let win = match app.get_webview_window(&panel_id) {
         Some(w) => w,
         None => return CmdResult::fail(format!("Panel {panel_id} is not open")),
     };
 
-    // Escape message for safe embedding in a JS template literal.
-    // Template literals only need backtick and ${} escaped.
     let escaped_msg = message
         .replace('\\', "\\\\")
         .replace('`', "\\`")
@@ -235,10 +282,61 @@ pub fn send_to_panel(
     }
 }
 
+/// Add a Tauri command handler for native IPC bridge events from injected JS.
+/// This is called when window.__TAURI_INTERNALS__.invoke('bridge_event', ...) fires.
+#[tauri::command]
+pub fn bridge_event(
+    app:      AppHandle,
+    state:    State<'_, AppState>,
+    #[allow(non_snake_case)]
+    r#type:   String,
+    #[allow(non_snake_case)]
+    panelId:  String,
+    output:   Option<String>,
+    message:  Option<String>,
+) -> CmdResult<()> {
+    use crate::bridge_server::{
+        EVENT_PANEL_ERROR, EVENT_PANEL_GENERATING, EVENT_PANEL_OUTPUT,
+        EVENT_PANEL_READY, PanelEventPayload,
+    };
+
+    match r#type.as_str() {
+        "output" => {
+            let out = output.unwrap_or_default();
+            state.store_output(&panelId, out.clone());
+            let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload {
+                panel_id: panelId, output: Some(out), message: None,
+            });
+        }
+        "ready" => {
+            state.set_status(&panelId, PanelStatus::Idle);
+            let _ = app.emit(EVENT_PANEL_READY, PanelEventPayload {
+                panel_id: panelId, output: None, message: None,
+            });
+        }
+        "generating" => {
+            state.set_status(&panelId, PanelStatus::Generating);
+            let _ = app.emit(EVENT_PANEL_GENERATING, PanelEventPayload {
+                panel_id: panelId, output: None, message: None,
+            });
+        }
+        "error" => {
+            let msg = message.unwrap_or_else(|| "unknown error".into());
+            state.set_status(&panelId, PanelStatus::Error { message: msg.clone() });
+            let _ = app.emit(EVENT_PANEL_ERROR, PanelEventPayload {
+                panel_id: panelId, output: None, message: Some(msg),
+            });
+        }
+        _ => {}
+    }
+
+    CmdResult::success(())
+}
+
 /// Clear stored output for a panel and reset it to Idle.
 #[tauri::command]
 pub fn reset_panel_output(
-    state:   State<'_, AppState>,
+    state:    State<'_, AppState>,
     panel_id: String,
 ) -> CmdResult<()> {
     let mut panels = state.panels.lock().unwrap();
