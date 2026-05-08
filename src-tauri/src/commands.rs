@@ -5,7 +5,7 @@ use crate::bridge::get_bridge_script;
 use crate::bridge_server::BRIDGE_PORT;
 use crate::state::{AppState, PanelInfo, PanelStatus};
 
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // ── Shared result type ────────────────────────────────────────────────────────
 
