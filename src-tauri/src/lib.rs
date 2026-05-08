@@ -1,30 +1,37 @@
 // src-tauri/src/lib.rs
-// Main Tauri application setup.
-// Wires together: state, commands, bridge server, plugins.
-//
-// STATE NOTE:
-// AppState is managed by Tauri (via .manage()) and retrieved in both commands
-// (via State<AppState>) and the bridge server (via app_handle.state::<AppState>()).
-// This ensures a single shared instance — no double-init bug.
 
 mod bridge;
 mod bridge_server;
 mod commands;
 mod state;
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        // Single AppState instance, accessible everywhere via app_handle.state::<AppState>()
         .manage(state::AppState::new())
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // Spawn the HTTP bridge server on Tauri's tokio runtime.
-            // Uses app_handle to retrieve AppState — same instance as commands.
+            // Start the HTTP bridge server
             tauri::async_runtime::spawn(async move {
                 bridge_server::start(app_handle).await;
+            });
+
+            // Auto-open all panels in the background on startup.
+            // If the session cookie is still valid, they'll go straight to READY.
+            // If not, user clicks VIEW to log in once.
+            let app_handle2 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Brief delay to let the bridge server bind its port first
+                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                for panel_id in state::ALL_PANELS {
+                    commands::open_panel_window(&app_handle2, panel_id);
+                    // Stagger slightly so we don't hammer the system at once
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                }
             });
 
             Ok(())
