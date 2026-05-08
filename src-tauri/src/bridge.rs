@@ -29,23 +29,13 @@ const SELECTOR_FALLBACK_FN: &str = r#"
 "#;
 
 // ── Gemini (gemini.google.com) ────────────────────────────────────────────────
-// Input:  div[contenteditable="true"] inside a rich-textarea component
-// Submit: click the send button (aria-label contains "Send message")
-// Output: last .model-response-text or [data-message-author-role="model"]
-//
-// VERIFY: Gemini's DOM structure as of mid-2024. Uses a Shadow DOM in places.
-// If the input isn't found, open DevTools on gemini.google.com and look for
-// the contenteditable div inside the prompt container.
 const GEMINI_BRIDGE: &str = r#"
 (function geminiInit() {
-    // trySelectors() is defined in the outer IIFE wrapper (commands.rs)
-
     const INPUT_SELECTORS = [
-        // VERIFY: these are the most likely candidates as of 2024
         'div[contenteditable="true"][aria-label*="Enter"]',
         'rich-textarea div[contenteditable="true"]',
         '.ql-editor[contenteditable="true"]',
-        'div[contenteditable="true"]',    // last-resort fallback
+        'div[contenteditable="true"]',
     ];
 
     const SEND_BTN_SELECTORS = [
@@ -53,95 +43,86 @@ const GEMINI_BRIDGE: &str = r#"
         'button[aria-label*="Send"]',
         'button.send-button',
         'button[data-testid="send-button"]',
+        'button[jsname="OCpkoe"]',
+        'button[jsaction*="send"]',
     ];
-
-    const OUTPUT_SELECTORS = [
-        '.model-response-text',
-        'model-response .response-content',
-        '[data-message-author-role="model"]:last-child',
-        '.response-container:last-child',
-    ];
-
-    // ── sendMessage implementation ──
 
     window.__orchestratorBridge.sendMessage = function(text) {
         const input = trySelectors(INPUT_SELECTORS);
         if (!input) {
-            console.error('[OrchestratorBridge:gemini] input not found. Check INPUT_SELECTORS.');
-            window.__orchestratorBridge.report('error', { message: 'input selector failed' });
+            window.__orchestratorBridge.report('error', { message: 'gemini input selector failed' });
             return;
         }
-
-        // Set contenteditable content via execCommand (works in WKWebView)
         input.focus();
         document.execCommand('selectAll', false, null);
         document.execCommand('delete', false, null);
         document.execCommand('insertText', false, text);
 
-        // Give React a tick to process the input event
         setTimeout(() => {
-            const sendBtn = trySelectors(SEND_BTN_SELECTORS);
-            if (sendBtn) {
-                sendBtn.click();
-            } else {
-                // Fallback: simulate Enter key
+            const btn = trySelectors(SEND_BTN_SELECTORS);
+            if (btn) { btn.click(); }
+            else {
                 input.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter', code: 'Enter', keyCode: 13,
-                    bubbles: true, cancelable: true
+                    key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true
                 }));
             }
             window.__orchestratorBridge.report('generating', {});
             watchForCompletion();
-        }, 150);
+        }, 200);
     };
 
-    // ── Generation completion detection ──
+    window.__orchestratorBridge.captureOutput = captureOutput;
 
     function watchForCompletion() {
+        let lastMutation = Date.now();
         let settled = false;
-        let lastMutationTime = Date.now();
-        const SETTLE_MS = 2500; // ms without DOM changes = done
+        const SETTLE_MS = 3500;
 
-        // Target: the whole response area
-        const responseArea =
-            document.querySelector('chat-history') ||
-            document.querySelector('.conversation-container') ||
-            document.body;
+        const area = document.querySelector('chat-history')
+            || document.querySelector('[class*="conversation"]')
+            || document.querySelector('main')
+            || document.body;
 
-        const observer = new MutationObserver(() => {
-            lastMutationTime = Date.now();
-        });
+        const observer = new MutationObserver(() => { lastMutation = Date.now(); });
+        observer.observe(area, { childList: true, subtree: true, characterData: true });
 
-        observer.observe(responseArea, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-        });
-
-        // Poll until settled
         const poll = setInterval(() => {
-            if (Date.now() - lastMutationTime > SETTLE_MS) {
+            if (Date.now() - lastMutation > SETTLE_MS) {
                 clearInterval(poll);
                 observer.disconnect();
-                if (!settled) {
-                    settled = true;
-                    extractAndReport();
-                }
+                if (!settled) { settled = true; captureOutput(); }
             }
-        }, 300);
+        }, 400);
     }
 
-    function extractAndReport() {
-        const outputEl = trySelectors(OUTPUT_SELECTORS);
-        const output = outputEl
-            ? outputEl.innerText.trim()
-            : '[OrchestratorBridge:gemini] output selector failed — check OUTPUT_SELECTORS';
+    function captureOutput() {
+        // Try progressively broader selectors
+        const candidates = [
+            // Current Gemini DOM (2024-2025)
+            ...Array.from(document.querySelectorAll('model-response')),
+            ...Array.from(document.querySelectorAll('.model-response-text')),
+            ...Array.from(document.querySelectorAll('[data-message-author-role="model"]')),
+            ...Array.from(document.querySelectorAll('message-content')),
+            ...Array.from(document.querySelectorAll('.response-container')),
+            ...Array.from(document.querySelectorAll('[class*="response"][class*="content"]')),
+            // Nuclear fallback: grab all paragraphs inside main
+            ...Array.from(document.querySelectorAll('main p')),
+        ];
 
-        if (!outputEl) {
-            console.error('[OrchestratorBridge:gemini] output not found. Check OUTPUT_SELECTORS.');
+        // Pick the last non-empty one
+        let output = '';
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const text = candidates[i].innerText?.trim();
+            if (text && text.length > 10) { output = text; break; }
         }
 
-        window.__orchestratorBridge.report('output', { output });
+        if (!output) {
+            // Last resort: grab all visible text from main excluding input area
+            const main = document.querySelector('main');
+            if (main) output = main.innerText.trim().slice(-3000);
+        }
+
+        window.__orchestratorBridge.report('output', { output: output || '[Gemini: output capture failed — click CAPTURE to retry]' });
     }
 })();
 "#;
@@ -262,54 +243,73 @@ const DEEPSEEK_BRIDGE: &str = r#"
 "#;
 
 // ── Grok (grok.com) ───────────────────────────────────────────────────────────
-// Input:  textarea — Grok uses a standard textarea
-// Submit: click the send button
-// VERIFY: Open grok.com in DevTools to confirm selectors
 const GROK_BRIDGE: &str = r#"
 (function grokInit() {
-    const INPUT_SELECTORS = [
-        'textarea[data-testid="grok-compose-input"]',
-        'textarea[placeholder*="Ask"]',
-        'textarea[placeholder*="Grok"]',
-        'textarea[placeholder*="anything"]',
-        'textarea[class*="compose"]',
-        'textarea',   // last resort
-    ];
+    function setReactValue(el, value) {
+        try {
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            nativeSetter.call(el, value);
+            el.dispatchEvent(new Event('input',  { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch(e) { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }
+    }
 
-    const SEND_BTN_SELECTORS = [
-        'button[data-testid="grok-compose-send"]',
-        'button[aria-label*="Send"]',
-        'button[type="submit"]',
-        'button[class*="send"]',
-        'button[class*="Send"]',
-    ];
+    function findInput() {
+        // Try textarea first (most likely)
+        const textareas = document.querySelectorAll('textarea');
+        for (const t of textareas) {
+            if (t.offsetParent !== null) return t; // visible textarea
+        }
+        // Fallback: contenteditable
+        const editables = document.querySelectorAll('div[contenteditable="true"]');
+        for (const e of editables) {
+            if (e.offsetParent !== null) return e;
+        }
+        return null;
+    }
 
-    function setReactTextareaValue(el, value) {
-        const nativeSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-        ).set;
-        nativeSetter.call(el, value);
-        el.dispatchEvent(new Event('input',  { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+    function findSendButton() {
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            const type  = btn.getAttribute('type') || '';
+            if (label.includes('send') || type === 'submit') return btn;
+        }
+        // Try SVG buttons (Grok uses icon buttons)
+        for (const btn of btns) {
+            if (btn.querySelector('svg') && btn.offsetParent !== null) {
+                // Last visible button with SVG is usually send
+                // Return the last one as fallback
+                const allVisible = Array.from(btns).filter(b => b.querySelector('svg') && b.offsetParent);
+                if (allVisible.length > 0) return allVisible[allVisible.length - 1];
+            }
+        }
+        return null;
     }
 
     window.__orchestratorBridge.sendMessage = function(text) {
-        const input = trySelectors(INPUT_SELECTORS);
+        const input = findInput();
         if (!input) {
-            console.error('[OrchestratorBridge:grok] input not found — open DevTools on grok.com to find the correct selector');
-            window.__orchestratorBridge.report('error', { message: 'grok input selector failed' });
+            console.error('[OrchestratorBridge:grok] no input found');
+            window.__orchestratorBridge.report('error', { message: 'grok input not found' });
             return;
         }
 
-        input.focus();
-        setReactTextareaValue(input, text);
+        if (input.tagName === 'TEXTAREA') {
+            setReactValue(input, text);
+        } else {
+            input.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, text);
+        }
 
         setTimeout(() => {
-            const sendBtn = trySelectors(SEND_BTN_SELECTORS);
-            if (sendBtn) {
-                sendBtn.click();
+            const btn = findSendButton();
+            if (btn) {
+                btn.click();
             } else {
-                // Fallback: Enter key
                 input.dispatchEvent(new KeyboardEvent('keydown', {
                     key: 'Enter', code: 'Enter', keyCode: 13,
                     bubbles: true, cancelable: true, shiftKey: false,
@@ -317,13 +317,15 @@ const GROK_BRIDGE: &str = r#"
             }
             window.__orchestratorBridge.report('generating', {});
             watchForCompletion();
-        }, 300);
+        }, 400);
     };
 
+    window.__orchestratorBridge.captureOutput = captureOutput;
+
     function watchForCompletion() {
-        let settled = false;
         let lastMutation = Date.now();
-        const SETTLE_MS = 3000;
+        let settled = false;
+        const SETTLE_MS = 3500;
 
         const area = document.querySelector('main') || document.body;
         const observer = new MutationObserver(() => { lastMutation = Date.now(); });
@@ -333,28 +335,29 @@ const GROK_BRIDGE: &str = r#"
             if (Date.now() - lastMutation > SETTLE_MS) {
                 clearInterval(poll);
                 observer.disconnect();
-                if (!settled) { settled = true; extractAndReport(); }
+                if (!settled) { settled = true; captureOutput(); }
             }
-        }, 300);
+        }, 400);
     }
 
-    function extractAndReport() {
-        // Try multiple output selectors — Grok's DOM changes frequently
-        const candidates = document.querySelectorAll([
-            '[data-testid*="response"]',
-            '[class*="message"]:not([class*="user"])',
-            '[class*="assistant"]',
-            '[class*="response"]',
-            'article',
-        ].join(','));
+    function captureOutput() {
+        // Grab all visible text blocks, pick the last meaningful one
+        const allBlocks = Array.from(document.querySelectorAll(
+            '[class*="message"], [class*="response"], [class*="assistant"], article, [role="article"]'
+        )).filter(el => el.offsetParent !== null);
 
-        const outputEl = candidates.length > 0 ? candidates[candidates.length - 1] : null;
-        const output = outputEl
-            ? outputEl.innerText.trim()
-            : '[OrchestratorBridge:grok] output selector failed — check DevTools on grok.com';
+        let output = '';
+        for (let i = allBlocks.length - 1; i >= 0; i--) {
+            const text = allBlocks[i].innerText?.trim();
+            if (text && text.length > 10) { output = text; break; }
+        }
 
-        if (!outputEl) console.error('[OrchestratorBridge:grok] could not find output element');
-        window.__orchestratorBridge.report('output', { output });
+        if (!output) {
+            const main = document.querySelector('main');
+            if (main) output = main.innerText.trim().slice(-3000);
+        }
+
+        window.__orchestratorBridge.report('output', { output: output || '[Grok: output capture failed]' });
     }
 })();
 "#;

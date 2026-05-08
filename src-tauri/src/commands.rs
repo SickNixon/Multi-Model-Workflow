@@ -269,3 +269,30 @@ pub fn reset_panel_output(state: State<'_, AppState>, panel_id: String) -> CmdRe
         None => CmdResult::fail(format!("Unknown panel_id: {panel_id}")),
     }
 }
+
+/// Manually trigger output capture in a panel — called by the CAPTURE button.
+/// Evals JS that calls the panel's own captureOutput() function.
+#[tauri::command]
+pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
+    let win = match app.get_webview_window(&panel_id) {
+        Some(w) => w,
+        None => return CmdResult::fail(format!("Panel {panel_id} not open")),
+    };
+    let js = r#"
+(function() {
+    if (window.__orchestratorBridge?.captureOutput) {
+        window.__orchestratorBridge.captureOutput();
+    } else {
+        // Generic fallback: grab last big text block on the page
+        const blocks = Array.from(document.querySelectorAll('p, div, article'))
+            .filter(el => el.offsetParent && el.innerText?.trim().length > 50);
+        const last = blocks[blocks.length - 1];
+        if (last && window.__orchestratorBridge) {
+            window.__orchestratorBridge.report('output', { output: last.innerText.trim() });
+        }
+    }
+})();
+"#;
+    let _ = win.eval(js);
+    CmdResult::success(())
+}

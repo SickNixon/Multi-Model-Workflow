@@ -45,6 +45,7 @@ pub fn run() {
             commands::hide_panel,
             commands::send_to_panel,
             commands::reset_panel_output,
+            commands::capture_panel_output,
             commands::bridge_event,
         ])
         .run(tauri::generate_context!())
