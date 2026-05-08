@@ -191,21 +191,20 @@ pub fn open_panel(
 
             // Fallback: if the JS bridge never fires (CSP blocks both IPC and fetch),
             // optimistically mark the panel Idle after 10 seconds so the UI isn't stuck.
-            let state_clone = app.state::<AppState>().clone();
-            let panel_id_clone = panel_id.clone();
             let app_clone = app.clone();
+            let panel_id_clone = panel_id.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                // Only promote if still Loading (don't override a real ready/error)
+                let state = app_clone.state::<AppState>();
                 let should_promote = {
-                    let panels = state_clone.panels.lock().unwrap();
+                    let panels = state.panels.lock().unwrap();
                     matches!(
                         panels.get(&panel_id_clone).map(|p| &p.status),
                         Some(PanelStatus::Loading)
                     )
                 };
                 if should_promote && app_clone.get_webview_window(&panel_id_clone).is_some() {
-                    state_clone.set_status(&panel_id_clone, PanelStatus::Idle);
+                    state.set_status(&panel_id_clone, PanelStatus::Idle);
                     let _ = app_clone.emit(
                         crate::bridge_server::EVENT_PANEL_READY,
                         crate::bridge_server::PanelEventPayload {
