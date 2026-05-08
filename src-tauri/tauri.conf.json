@@ -36,9 +36,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": {
-        "NSMicrophoneUsageDescription": "Vibe Orchestrator uses the microphone for speech-to-text prompt input."
-      }
+      "infoPlist": "Info.plist"
     }
   }
 }
