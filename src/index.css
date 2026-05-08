@@ -1,0 +1,147 @@
+/* src/index.css
+ * Global styles for Vibe Orchestrator.
+ * Design language: dark industrial terminal — phosphor glow on gunmetal.
+ * Fonts: Bebas Neue (display) + Inconsolata (mono body).
+ */
+
+:root {
+  /* Colour tokens */
+  --bg-void:      #060a0e;   /* near-black, slight blue */
+  --bg-surface:   #0d1520;   /* panel chrome */
+  --bg-raised:    #152030;   /* elevated elements */
+  --border:       #1e3448;   /* structural borders */
+  --border-glow:  #2a4f72;   /* hover/focus borders */
+
+  --accent:       #00e5ff;   /* cyan — primary interactive */
+  --accent-dim:   #007a99;   /* dimmed accent */
+  --amber:        #f59e0b;   /* active / generating */
+  --green:        #22c55e;   /* done / success */
+  --red:          #ef4444;   /* error */
+  --muted:        #4a6070;   /* deemphasised text */
+
+  --text-primary:   #d4e8f5;
+  --text-secondary: #7fa8c2;
+  --text-dim:       #3d6070;
+
+  /* Panel identity colours (matching types.ts) */
+  --gemini-color:   #4285F4;
+  --deepseek-color: #00C4CC;
+  --grok-color:     #e5e7eb;
+  --claude-color:   #D97706;
+
+  /* Typography */
+  --font-mono:    'Inconsolata', 'Fira Mono', monospace;
+  --font-display: 'Bebas Neue', 'Impact', sans-serif;
+
+  /* Spacing */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 16px;
+  --gap-lg: 24px;
+
+  /* Transitions */
+  --transition-fast: 120ms ease;
+  --transition-std:  220ms ease;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar        { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: var(--bg-void); }
+::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-glow); }
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+
+.display { font-family: var(--font-display); letter-spacing: 0.05em; }
+.muted   { color: var(--text-secondary); }
+.dim     { color: var(--text-dim); }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+button {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: none;
+  outline: none;
+  transition: all var(--transition-fast);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg-void);
+  font-weight: 700;
+  padding: 8px 18px;
+  border-radius: 3px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.btn-primary:hover  { filter: brightness(1.15); }
+.btn-primary:active { filter: brightness(0.9); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.btn-ghost:hover  { border-color: var(--accent); color: var(--accent); }
+.btn-ghost:active { background: rgba(0, 229, 255, 0.06); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 6px 14px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+
+/* ── Pulse animation for generating state ────────────────────────────────── */
+
+@keyframes pulse-amber {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes scan-line {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+
+::selection {
+  background: rgba(0, 229, 255, 0.2);
+  color: var(--text-primary);
+}

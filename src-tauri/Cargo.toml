@@ -1,0 +1,36 @@
+[package]
+name = "vibe-orchestrator"
+version = "0.1.0"
+description = "Multi-model AI orchestrator — a very organised browser"
+authors = ["Pat"]
+edition = "2021"
+
+# Produce both a library crate (for Tauri's macro codegen) and a binary.
+[lib]
+name = "vibe_orchestrator_lib"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri            = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+# HTTP bridge server (lets injected JS POST output back to us via fetch)
+axum             = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
+tower-http       = { version = "0.5", features = ["cors"] }
+tokio            = { version = "1", features = ["net", "rt"] }
+# Logging
+log              = "0.4"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+panic        = "abort"
+codegen-units = 1
+lto          = true
+opt-level    = "s"
+strip        = true
