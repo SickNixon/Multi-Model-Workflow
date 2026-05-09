@@ -3,14 +3,29 @@ import { useRef, useEffect, KeyboardEvent, useState, useCallback } from 'react';
 import { useStore } from '../store';
 import { type PanelId, type RoutingMode, ALL_PANEL_IDS, PANEL_LABELS, PANEL_COLORS } from '../types';
 
-// ── Speech recognition ────────────────────────────────────────────────────────
-
 // ── Speech-to-text hook ───────────────────────────────────────────────────────
+//
+// BUG HISTORY: Previously `useEffect` depended on `onTranscript`. Because
+// `onTranscript` is `useCallback(fn, [appendDraft])` and `appendDraft` is a
+// fresh reference from Zustand on every render, the effect was re-running on
+// every render — tearing down and rebuilding the recognition instance constantly,
+// leaving `recogRef.current` pointing at an aborted instance that never started.
+//
+// FIX: use a `callbackRef` to keep the latest transcript handler without
+// making it a dependency of the setup effect. The recognition instance is
+// created ONCE on mount and cleaned up only on unmount.
 function useSpeechToText(onTranscript: (text: string) => void) {
   const [listening, setListening]   = useState(false);
   const [supported, setSupported]   = useState(false);
-  const recogRef = useRef<SpeechRecognition | null>(null);
+  const recogRef    = useRef<SpeechRecognition | null>(null);
+  // Keeps the latest callback without triggering the setup effect
+  const callbackRef = useRef(onTranscript);
 
+  // Sync callbackRef to latest prop on every render (no dep array = always runs,
+  // but this is a ref assignment — zero side effects, zero cost)
+  useEffect(() => { callbackRef.current = onTranscript; });
+
+  // Create the recognition instance ONCE on mount. Never tear it down until unmount.
   useEffect(() => {
     const SR = (window as Window & typeof globalThis).SpeechRecognition
             || (window as Window & typeof globalThis).webkitSpeechRecognition;
@@ -38,17 +53,15 @@ function useSpeechToText(onTranscript: (text: string) => void) {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         if (e.results[i].isFinal) finals += e.results[i][0].transcript + ' ';
       }
-      if (finals.trim()) onTranscript(finals.trim());
+      // Use ref so we always call the latest callback, not a stale closure
+      if (finals.trim()) callbackRef.current(finals.trim());
     };
 
     r.onerror = (e) => {
       console.error('[STT] error:', e.error, e.message);
       setListening(false);
-      // 'not-allowed' = mic permission denied
-      // 'no-speech' = silence timeout (normal)
-      // 'network' = no connection to Apple's STT servers
       if (e.error === 'not-allowed') {
-        alert('Microphone access denied. Go to System Settings → Privacy → Microphone and allow the app.');
+        alert('Microphone access denied. Go to System Settings → Privacy & Security → Microphone and allow Vibe Orchestrator.');
       }
     };
 
@@ -58,32 +71,45 @@ function useSpeechToText(onTranscript: (text: string) => void) {
     };
 
     recogRef.current = r;
-    return () => { try { r.abort(); } catch(e) {} };
-  }, [onTranscript]);
+
+    return () => {
+      try { r.abort(); } catch(e) { /* already stopped — fine */ }
+      recogRef.current = null;
+    };
+  }, []); // ← EMPTY DEPS: create once, keep alive for the lifetime of this component
 
   const toggle = useCallback(() => {
     const r = recogRef.current;
     if (!r) {
-      console.error('[STT] no recognition instance');
+      console.error('[STT] no recognition instance — was supported detected correctly?');
       return;
     }
     if (listening) {
-      try { r.stop(); } catch(e) { console.error('[STT] stop error:', e); }
-      setListening(false);
+      try { r.stop(); } catch(e) {
+        console.error('[STT] stop error:', e);
+        setListening(false); // force state back if stop throws
+      }
     } else {
       try {
         console.log('[STT] starting...');
         r.start();
-      } catch(e) {
-        console.error('[STT] start error:', e);
-        // If already started, stop and restart
-        try { r.stop(); setTimeout(() => { try { r.start(); } catch(e2) {} }, 200); } catch(e2) {}
+      } catch(e: unknown) {
+        const err = e as DOMException;
+        console.error('[STT] start error:', err?.name, err?.message);
+        // InvalidStateError = already started (e.g. continuous mode restarted itself)
+        if (err?.name === 'InvalidStateError') {
+          try {
+            r.stop();
+            setTimeout(() => { try { r.start(); } catch(e2) {} }, 300);
+          } catch(e2) {}
+        }
       }
     }
-  }, [listening]);
+  }, [listening]); // listening is the only thing that changes toggle's behaviour
 
   return { listening, supported, toggle };
 }
+
 
 // ── Routing selector ──────────────────────────────────────────────────────────
 function RoutingSelector() {
@@ -184,6 +210,7 @@ function MessageLog() {
     </div>
   );
 }
+
 
 // ── Prompt composer with STT ──────────────────────────────────────────────────
 function PromptComposer() {
