@@ -29,10 +29,9 @@ export function ModelCard({ panelId, info }: Props) {
   const hidePanel    = useStore(s => s.hidePanel);
   const capturePanel = useStore(s => s.capturePanel);
 
-  const status      = info?.status.status;
-  const isOpen      = status !== 'closed' && status !== undefined;
+  const status       = info?.status.status;
+  const isOpen       = status !== 'closed' && status !== undefined;
   const isGenerating = status === 'generating';
-  const isDone       = status === 'done';
   const accentColor  = PANEL_COLORS[panelId];
 
   return (
