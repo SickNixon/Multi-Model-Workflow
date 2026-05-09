@@ -64,27 +64,11 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
         return null;
     }}
 
-    // Native Tauri IPC — bypasses ALL CSP, goes through WebKit native bridge
+    // Beacon-only report — image requests to the local bridge server at 127.0.0.1:{port}
+    // are the universal transport: confirmed working from all external WebViews
+    // regardless of Tauri IPC capability settings or site CSP.
+    // (IPC silently swallowed panel events due to permission model — removed.)
     function report(type, extra) {{
-        // PRIMARY: native Tauri IPC
-        try {{
-            if (window.__TAURI_INTERNALS__?.invoke) {{
-                window.__TAURI_INTERNALS__.invoke('bridge_event', {{
-                    eventType: type,
-                    panelId:   PANEL_ID,
-                    output:    extra?.output  ?? null,
-                    message:   extra?.message ?? null,
-                }})
-                .catch(err => {{
-                    console.warn('[OrchestratorBridge] IPC failed, beacon fallback:', err);
-                    reportViaBeacon(type, extra);
-                }});
-                return;
-            }}
-        }} catch(e) {{
-            console.warn('[OrchestratorBridge] IPC exception:', e);
-        }}
-        // FALLBACK: image beacon
         reportViaBeacon(type, extra);
     }}
 
