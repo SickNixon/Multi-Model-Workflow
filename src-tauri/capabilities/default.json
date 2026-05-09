@@ -1,14 +1,15 @@
 {
-  "$schema": "../schemas/capabilities.json",
+  "$schema": "../node_modules/@tauri-apps/cli/schema/acl/capability.json",
   "identifier": "default",
   "windows": ["main", "gemini", "deepseek", "grok", "claude"],
   "remote": {
-    "urls": ["https://**", "http://**"]
+    "urls": ["https://**", "http://127.0.0.1/**"]
   },
   "permissions": [
-  "core:default",
-  "core:event:allow-emit",
-  "core:event:allow-listen",
-  "shell:allow-open"
-]
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "shell:allow-open"
+  ]
 }
