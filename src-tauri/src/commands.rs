@@ -298,14 +298,79 @@ pub fn send_to_panel(app: AppHandle, state: State<'_, AppState>, panel_id: Strin
     match win.eval(&js) {
         Ok(_) => {
             state.set_status(&panel_id, PanelStatus::Generating);
-            let _ = app.emit(crate::bridge_server::EVENT_PANEL_GENERATING,
-                crate::bridge_server::PanelEventPayload { panel_id: panel_id.clone(), output: None, message: None });
-
-            // NO polling loop – IPC will deliver output event
+            let _ = app.emit(
+                crate::bridge_server::EVENT_PANEL_GENERATING,
+                crate::bridge_server::PanelEventPayload { panel_id: panel_id.clone(), output: None, message: None },
+            );
+            // IPC blocked by connect-src CSP, beacon blocked by img-src CSP,
+            // postMessage unregistered for external WebViews in Tauri 2.
+            // Title-poll is the only CSP-immune channel: eval() writes, win.title() reads.
+            spawn_title_poll(app.clone(), panel_id);
             CmdResult::success(())
         }
         Err(e) => CmdResult::fail(format!("eval failed: {e}")),
     }
+}
+
+/// Polls the WebView for output by encoding it in document.title.
+/// eval() pushes JS natively (no CSP). win.title() reads NSWindow.title (no network).
+fn spawn_title_poll(app: AppHandle, panel_id: String) {
+    tauri::async_runtime::spawn(async move {
+        const POLL_MS: u64 = 1500;
+        const TIMEOUT_SECS: u64 = 180;
+        const PREFIX: &str = "__VOUT__:";
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+
+        let poll_js = r#"(function(){
+    var s = window.__orchestratorState;
+    if (!s || s.status !== 'done' || window.__vibe_title_set) return;
+    window.__vibe_title_set = true;
+    try { document.title = '__VOUT__:' + JSON.stringify(s.output || ''); } catch(e) {}
+})();"#;
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(POLL_MS)).await;
+            if std::time::Instant::now() > deadline { break; }
+
+            let win = match app.get_webview_window(&panel_id) {
+                Some(w) => w,
+                None    => break,
+            };
+
+            // Already delivered via IPC (e.g. DeepSeek beacon works) — bail.
+            {
+                let state = app.state::<AppState>();   // <-- garde le State vivant
+                let panels = state.panels.lock().unwrap();
+                if panels.get(&panel_id).and_then(|p| p.last_output.as_ref()).is_some() {
+                    break;
+                }
+            }
+
+            let _ = win.eval(poll_js);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let title = match win.title() { Ok(t) => t, Err(_) => continue };
+            if !title.starts_with(PREFIX) { continue; }
+
+            let output = match serde_json::from_str::<String>(&title[PREFIX.len()..]) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Restore window title.
+            let _ = win.eval("if(window.__vibe_title_set){document.title=window.__vibe_orig_title||'';window.__vibe_title_set=false;}");
+
+            let app_state = app.state::<AppState>();
+            if app_state.store_output(&panel_id, output.clone()) {
+                use crate::bridge_server::*;
+                let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload {
+                    panel_id: panel_id.clone(), output: Some(output), message: None,
+                });
+            }
+            break;
+        }
+    });
 }
 
 #[tauri::command]
@@ -438,6 +503,7 @@ pub fn reset_claude_session(app: AppHandle, state: State<'_, AppState>) -> CmdRe
 }
 
 #[tauri::command]
+#[allow(deprecated)]
 pub fn open_in_browser(app: AppHandle, url: String) -> CmdResult<()> {
     if let Err(e) = app.shell().open(url, None) {
         return CmdResult::fail(format!("Failed to open browser: {e}"));
