@@ -61,9 +61,9 @@ export function ModelCard({ panelId, info }: Props) {
           <>
             <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => showPanel(panelId)}>VIEW</button>
             <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => hidePanel(panelId)}>HIDE</button>
-            {(isDone || isGenerating) && (
+            {isOpen && (
               <button className="btn-ghost" style={{ fontSize: 11, color: 'var(--accent)', borderColor: 'var(--accent)' }}
-                onClick={() => capturePanel(panelId)} title="Manually capture latest output">
+                onClick={() => capturePanel(panelId)} title="Run DOM diagnostic + capture output">
                 CAPTURE
               </button>
             )}
