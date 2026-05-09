@@ -356,7 +356,21 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
 
     let js = format!(r#"
 (function() {{
+    // Use IPC first (works on all panels now that withGlobalTauri=true),
+    // fall back to beacon for belt-and-suspenders.
     function sendOutput(text) {{
+        if (window.__TAURI_INTERNALS__?.invoke) {{
+            window.__TAURI_INTERNALS__.invoke('bridge_event', {{
+                event_type: 'output',
+                panel_id:   {pid},
+                output:     text,
+                message:    null,
+            }}).catch(() => sendViaBeacon(text));
+            return;
+        }}
+        sendViaBeacon(text);
+    }}
+    function sendViaBeacon(text) {{
         const payload = JSON.stringify({{ type: "output", panel_id: {pid}, output: text }});
         const CHUNK = 1800;
         const total = Math.ceil(payload.length / CHUNK);
@@ -367,7 +381,7 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
         }}
     }}
 
-    // First try to capture actual output
+    // First try the bridge's own captureOutput
     if (window.__orchestratorBridge?.captureOutput) {{
         window.__orchestratorBridge.captureOutput();
         return;
