@@ -3,13 +3,7 @@ import { useRef, useEffect, KeyboardEvent, useState, useCallback } from 'react';
 import { useStore } from '../store';
 import { type PanelId, type RoutingMode, ALL_PANEL_IDS, PANEL_LABELS, PANEL_COLORS } from '../types';
 
-// ── Speech recognition types ──────────────────────────────────────────────────
-declare global {
-  interface Window {
-    SpeechRecognition: typeof SpeechRecognition;
-    webkitSpeechRecognition: typeof SpeechRecognition;
-  }
-}
+// ── Speech recognition ────────────────────────────────────────────────────────
 
 // ── Speech-to-text hook ───────────────────────────────────────────────────────
 function useSpeechToText(onTranscript: (text: string) => void) {
@@ -18,53 +12,72 @@ function useSpeechToText(onTranscript: (text: string) => void) {
   const recogRef = useRef<SpeechRecognition | null>(null);
 
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    setSupported(!!SR);
-    if (!SR) return;
+    const SR = (window as Window & typeof globalThis).SpeechRecognition
+            || (window as Window & typeof globalThis).webkitSpeechRecognition;
 
+    if (!SR) {
+      console.warn('[STT] SpeechRecognition not available in this WebView');
+      setSupported(false);
+      return;
+    }
+
+    setSupported(true);
     const r = new SR();
     r.continuous      = true;
     r.interimResults  = true;
     r.lang            = 'en-US';
+    r.maxAlternatives = 1;
 
-    let finalAccum = '';
+    r.onstart = () => {
+      console.log('[STT] recognition started');
+      setListening(true);
+    };
 
     r.onresult = (e) => {
-      let interim = '';
+      let finals = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) { finalAccum += t + ' '; }
-        else                      { interim = t; }
+        if (e.results[i].isFinal) finals += e.results[i][0].transcript + ' ';
       }
-      // Send final text to store as it accumulates
-      if (finalAccum) {
-        onTranscript(finalAccum.trim());
-        finalAccum = '';
-      }
+      if (finals.trim()) onTranscript(finals.trim());
     };
 
     r.onerror = (e) => {
-      console.error('[STT]', e.error);
+      console.error('[STT] error:', e.error, e.message);
+      setListening(false);
+      // 'not-allowed' = mic permission denied
+      // 'no-speech' = silence timeout (normal)
+      // 'network' = no connection to Apple's STT servers
+      if (e.error === 'not-allowed') {
+        alert('Microphone access denied. Go to System Settings → Privacy → Microphone and allow the app.');
+      }
+    };
+
+    r.onend = () => {
+      console.log('[STT] recognition ended');
       setListening(false);
     };
-    r.onend = () => setListening(false);
 
     recogRef.current = r;
-    return () => { r.abort(); };
+    return () => { try { r.abort(); } catch(e) {} };
   }, [onTranscript]);
 
   const toggle = useCallback(() => {
     const r = recogRef.current;
-    if (!r) return;
+    if (!r) {
+      console.error('[STT] no recognition instance');
+      return;
+    }
     if (listening) {
-      r.stop();
+      try { r.stop(); } catch(e) { console.error('[STT] stop error:', e); }
       setListening(false);
     } else {
       try {
+        console.log('[STT] starting...');
         r.start();
-        setListening(true);
       } catch(e) {
-        console.error('[STT] start failed:', e);
+        console.error('[STT] start error:', e);
+        // If already started, stop and restart
+        try { r.stop(); setTimeout(() => { try { r.start(); } catch(e2) {} }, 200); } catch(e2) {}
       }
     }
   }, [listening]);

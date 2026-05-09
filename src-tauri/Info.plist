@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Vibe Orchestrator uses the microphone for speech-to-text prompt input.</string>
+  <string>Vibe Orchestrator uses the microphone for voice-to-text prompt input.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Vibe Orchestrator uses speech recognition to convert your voice to text prompts.</string>
 </dict>
 </plist>
