@@ -28,9 +28,6 @@ pub fn run() {
                 // Brief delay to let the bridge server bind its port first
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 for panel_id in state::ALL_PANELS {
-                    // Claude uses Cloudflare Turnstile — never auto-open in WebView.
-                    // User opens it via OPEN button → system browser.
-                    if *panel_id == "claude" { continue; }
                     commands::open_panel_window(&app_handle2, panel_id);
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 }

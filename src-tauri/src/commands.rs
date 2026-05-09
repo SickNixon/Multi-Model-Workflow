@@ -244,15 +244,6 @@ pub fn get_bridge_port() -> CmdResult<u16> { CmdResult::success(BRIDGE_PORT) }
 
 #[tauri::command]
 pub fn open_panel(app: AppHandle, state: State<'_, AppState>, panel_id: String) -> CmdResult<()> {
-    // Claude WebView fights Cloudflare Turnstile and loses every time.
-    // Open in the system browser instead — user is already logged in there.
-    if panel_id == "claude" {
-        if let Err(e) = app.shell().open("https://claude.ai", None) {
-            return CmdResult::fail(format!("Failed to open browser: {e}"));
-        }
-        return CmdResult::success(());
-    }
-
     if let Some(win) = app.get_webview_window(&panel_id) {
         let _ = win.show(); let _ = win.set_focus();
         return CmdResult::success(());
