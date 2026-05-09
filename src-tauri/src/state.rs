@@ -117,9 +117,16 @@ impl AppState {
     }
 
     /// Store output for a panel and mark it Done.
+    /// Returns false if the panel is unknown OR if the output is identical to
+    /// what's already stored (deduplication — IPC + beacon can both deliver
+    /// the same event; we only emit once).
     pub fn store_output(&self, panel_id: &str, output: String) -> bool {
         let mut panels = self.panels.lock().unwrap();
         if let Some(p) = panels.get_mut(panel_id) {
+            // Deduplicate: same output string arriving twice (IPC + beacon race)
+            if p.last_output.as_deref() == Some(output.as_str()) {
+                return false;
+            }
             p.last_output = Some(output);
             p.status = PanelStatus::Done;
             true

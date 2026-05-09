@@ -9,7 +9,8 @@ const dot: React.CSSProperties = {
   display: 'inline-block', width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
 };
 
-function StatusDot({ info }: { info: PanelInfo | undefined }) {
+function StatusDot({ info, isBrowser }: { info: PanelInfo | undefined; isBrowser: boolean }) {
+  if (isBrowser) return <span style={{ ...dot, background: '#a78bfa' }} title="Opens in system browser" />;
   const s = info?.status.status;
   const colors: Record<string, string> = {
     loading: '#7fa8c2', idle: '#22c55e', generating: 'var(--amber)', done: '#22c55e', error: '#ef4444',
@@ -23,7 +24,8 @@ function StatusDot({ info }: { info: PanelInfo | undefined }) {
   }} />;
 }
 
-function StatusLabel({ info }: { info: PanelInfo | undefined }) {
+function StatusLabel({ info, isBrowser }: { info: PanelInfo | undefined; isBrowser: boolean }) {
+  if (isBrowser) return <span style={{ color: '#a78bfa', fontSize: 10, letterSpacing: '0.1em' }}>BROWSER</span>;
   const s = info?.status.status ?? 'closed';
   const labels: Record<string, string> = {
     closed: 'CLOSED', loading: 'LOADING…', idle: 'READY',
@@ -46,83 +48,69 @@ export function ModelCard({ panelId, info }: Props) {
   const showPanel    = useStore(s => s.showPanel);
   const hidePanel    = useStore(s => s.hidePanel);
   const capturePanel = useStore(s => s.capturePanel);
-  const refreshPanels = useStore(s => s.refreshPanels);
 
+  // Claude never loads in a WebView — Cloudflare Turnstile always blocks it.
+  // OPEN → launches claude.ai in the system browser instead.
+  const isBrowser    = panelId === 'claude';
   const status       = info?.status.status;
-  const isOpen       = status !== 'closed' && status !== undefined;
+  const isOpen       = !isBrowser && status !== 'closed' && status !== undefined;
   const isGenerating = status === 'generating';
-  const isClaude     = panelId === 'claude';
-  const isError      = status === 'error';
   const accentColor  = PANEL_COLORS[panelId];
-
-  async function handleResetClaude() {
-    // Close the panel first, wipe session, reopen fresh
-    await closePanel(panelId);
-    await invoke('reset_claude_session');
-    setTimeout(() => openPanel(panelId), 600);
-  }
-
-  async function handleLoginInBrowser() {
-    await invoke('open_in_browser', { url: 'https://claude.ai' });
-  }
 
   return (
     <div style={{
       ...card,
-      borderColor: isOpen ? accentColor : 'var(--border)',
+      borderColor: isOpen ? accentColor : isBrowser ? '#a78bfa44' : 'var(--border)',
       boxShadow:   isOpen ? `0 0 12px ${accentColor}22` : 'none',
     }}>
       {/* Header row */}
       <div style={row}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <StatusDot info={info} />
+          <StatusDot info={info} isBrowser={isBrowser} />
           <span className="display" style={{ fontSize: 20, color: accentColor }}>
             {panelId.toUpperCase()}
           </span>
         </div>
-        <StatusLabel info={info} />
+        <StatusLabel info={info} isBrowser={isBrowser} />
       </div>
 
-      {/* Output preview */}
-      <div style={{
-        ...preview,
-        opacity: isOpen ? 1 : 0.3,
-        animationName: isGenerating ? 'pulse-amber' : 'none',
-        animationDuration: '1.4s', animationIterationCount: 'infinite',
-      }}>
-        {isGenerating
-          ? '▌  generating…'
-          : (info?.last_output
-            ? info.last_output.slice(0, 140) + (info.last_output.length > 140 ? '…' : '')
-            : '— no output yet —')}
-      </div>
-
-      {/* Claude-specific Cloudflare warning + helpers */}
-      {isClaude && isOpen && (isError || status === 'loading') && (
+      {/* Output preview — not shown for browser panels */}
+      {!isBrowser && (
         <div style={{
-          fontSize: 10, color: 'var(--amber)', background: 'var(--bg-raised)',
-          borderRadius: 3, padding: '5px 8px', lineHeight: 1.5,
+          ...preview,
+          opacity: isOpen ? 1 : 0.3,
+          animationName: isGenerating ? 'pulse-amber' : 'none',
+          animationDuration: '1.4s', animationIterationCount: 'infinite',
         }}>
-          Cloudflare challenge detected.{' '}
-          <span
-            style={{ textDecoration: 'underline', cursor: 'pointer' }}
-            onClick={() => showPanel(panelId)}
-          >
-            Click VIEW to verify
-          </span>
-          {' '}or{' '}
-          <span
-            style={{ textDecoration: 'underline', cursor: 'pointer' }}
-            onClick={handleLoginInBrowser}
-          >
-            open in {navigator.userAgent.includes('Edg') ? 'Edge' : 'browser'}
-          </span>
+          {isGenerating
+            ? '▌  generating…'
+            : (info?.last_output
+              ? info.last_output.slice(0, 140) + (info.last_output.length > 140 ? '…' : '')
+              : '— no output yet —')}
+        </div>
+      )}
+
+      {/* Claude browser-only info */}
+      {isBrowser && (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6, padding: '4px 0' }}>
+          Claude opens in your system browser — Cloudflare blocks WebView access.
+          Log in once in your browser and keep that tab open while orchestrating.
         </div>
       )}
 
       {/* Action buttons */}
       <div style={{ ...row, flexWrap: 'wrap', gap: 6 }}>
-        {!isOpen ? (
+        {isBrowser ? (
+          /* Claude: single browser-open button */
+          <button
+            className="btn-primary"
+            style={{ background: '#7c3aed', fontSize: 11 }}
+            onClick={() => openPanel(panelId)}
+            title="Open claude.ai in your system browser"
+          >
+            OPEN IN BROWSER ↗
+          </button>
+        ) : !isOpen ? (
           <button
             className="btn-primary"
             style={{ background: accentColor, fontSize: 11 }}
@@ -146,29 +134,14 @@ export function ModelCard({ panelId, info }: Props) {
             >
               CAPTURE
             </button>
-
-            {/* Claude-only: reset session + browser login */}
-            {isClaude && (
-              <>
-                <button
-                  className="btn-ghost"
-                  style={{ fontSize: 11, color: 'var(--amber)', borderColor: 'var(--amber)' }}
-                  onClick={handleResetClaude}
-                  title="Wipe Claude session and reopen fresh"
-                >
-                  RESET
-                </button>
-                <button
-                  className="btn-ghost"
-                  style={{ fontSize: 11, color: '#a78bfa', borderColor: '#a78bfa' }}
-                  onClick={handleLoginInBrowser}
-                  title="Open claude.ai in your default browser to login, then come back"
-                >
-                  BROWSER LOGIN
-                </button>
-              </>
-            )}
-
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 10, color: 'var(--text-dim)', borderColor: 'var(--border)' }}
+              onClick={() => void invoke('open_panel_devtools', { panelId })}
+              title="Open DevTools for this panel (debug)"
+            >
+              DEV
+            </button>
             <button
               className="btn-ghost"
               style={{ fontSize: 11, color: 'var(--red)', borderColor: 'var(--red)', marginLeft: 'auto' }}
@@ -181,7 +154,6 @@ export function ModelCard({ panelId, info }: Props) {
       </div>
     </div>
   );
-}
 
 const card: React.CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 10,

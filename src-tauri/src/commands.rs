@@ -205,9 +205,19 @@ pub fn open_panel_window(app: &AppHandle, panel_id: &str) {
         .visible(false)
         .build();
 
-    if result.is_ok() {
+    if let Ok(win) = result {
         state.set_status(panel_id, PanelStatus::Loading);
         schedule_idle_fallback(app.clone(), panel_id.to_string());
+
+        // Close button → hide instead of destroy.
+        // This keeps the WebView (and its session) alive in the background.
+        let win_clone = win.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = win_clone.hide();
+            }
+        });
     }
 }
 
@@ -234,6 +244,15 @@ pub fn get_bridge_port() -> CmdResult<u16> { CmdResult::success(BRIDGE_PORT) }
 
 #[tauri::command]
 pub fn open_panel(app: AppHandle, state: State<'_, AppState>, panel_id: String) -> CmdResult<()> {
+    // Claude WebView fights Cloudflare Turnstile and loses every time.
+    // Open in the system browser instead — user is already logged in there.
+    if panel_id == "claude" {
+        if let Err(e) = app.shell().open("https://claude.ai", None) {
+            return CmdResult::fail(format!("Failed to open browser: {e}"));
+        }
+        return CmdResult::success(());
+    }
+
     if let Some(win) = app.get_webview_window(&panel_id) {
         let _ = win.show(); let _ = win.set_focus();
         return CmdResult::success(());
@@ -311,8 +330,9 @@ pub fn bridge_event(
     match event_type.as_str() {
         "output" => {
             let out = output.unwrap_or_default();
-            state.store_output(&panel_id, out.clone());
-            let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload { panel_id, output: Some(out), message: None });
+            if state.store_output(&panel_id, out.clone()) {
+                let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload { panel_id, output: Some(out), message: None });
+            }
         }
         "ready" => {
             state.set_status(&panel_id, PanelStatus::Idle);
@@ -432,4 +452,15 @@ pub fn open_in_browser(app: AppHandle, url: String) -> CmdResult<()> {
         return CmdResult::fail(format!("Failed to open browser: {e}"));
     }
     CmdResult::success(())
+}
+
+/// Opens the WebView DevTools for the given panel — dev/debug use only.
+/// Lets you inspect the DOM, see console output, and verify
+/// `window.__TAURI_INTERNALS__` is available in external WebViews.
+#[tauri::command]
+pub fn open_panel_devtools(app: AppHandle, panel_id: String) -> CmdResult<()> {
+    match app.get_webview_window(&panel_id) {
+        Some(win) => { win.open_devtools(); CmdResult::success(()) }
+        None => CmdResult::fail(format!("Panel {panel_id} not open")),
+    }
 }

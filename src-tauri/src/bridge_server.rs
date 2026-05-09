@@ -140,10 +140,11 @@ fn dispatch_event(app: &AppHandle, event: BridgeEvent) {
     let app_state = app.state::<AppState>();
     match event {
         BridgeEvent::Output { panel_id, output } => {
-            app_state.store_output(&panel_id, output.clone());
-            let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload {
-                panel_id, output: Some(output), message: None,
-            });
+            if app_state.store_output(&panel_id, output.clone()) {
+                let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload {
+                    panel_id, output: Some(output), message: None,
+                });
+            }
         }
         BridgeEvent::Ready { panel_id } => {
             use crate::state::PanelStatus;

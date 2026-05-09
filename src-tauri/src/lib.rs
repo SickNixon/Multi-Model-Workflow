@@ -28,8 +28,10 @@ pub fn run() {
                 // Brief delay to let the bridge server bind its port first
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 for panel_id in state::ALL_PANELS {
+                    // Claude uses Cloudflare Turnstile — never auto-open in WebView.
+                    // User opens it via OPEN button → system browser.
+                    if *panel_id == "claude" { continue; }
                     commands::open_panel_window(&app_handle2, panel_id);
-                    // Stagger slightly so we don't hammer the system at once
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 }
             });
@@ -49,6 +51,7 @@ pub fn run() {
             commands::bridge_event,
             commands::reset_claude_session,
             commands::open_in_browser,
+            commands::open_panel_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vibe-orchestrator");
