@@ -64,40 +64,32 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
         return null;
     }}
 
-    // Image beacon: bypasses connect-src CSP — img-src is usually unrestricted
+    // Native Tauri IPC — bypasses ALL CSP, goes through WebKit native bridge
     function report(type, extra) {{
-        const payload = {{ type, panel_id: PANEL_ID, ...extra }};
-
-        // PRIMARY: native Tauri IPC via WKScriptMessageHandler — bypasses ALL CSP
-        // because it goes through native WebKit IPC, not HTTP.
+        // PRIMARY: native Tauri IPC
         try {{
-            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+            if (window.__TAURI_INTERNALS__?.invoke) {{
                 window.__TAURI_INTERNALS__.invoke('bridge_event', {{
-                    type,
-                    panelId: PANEL_ID,
-                    output:  extra && extra.output  ? extra.output  : null,
-                    message: extra && extra.message ? extra.message : null,
-                }})
-                .then(() => {{
-                    // IPC worked — log it
-                    console.log('[OrchestratorBridge] IPC ok:', type, PANEL_ID);
+                    eventType: type,
+                    panelId:   PANEL_ID,
+                    output:    extra?.output  ?? null,
+                    message:   extra?.message ?? null,
                 }})
                 .catch(err => {{
-                    console.warn('[OrchestratorBridge] IPC failed, falling back to beacon:', err);
-                    reportViaBeacon(payload);
+                    console.warn('[OrchestratorBridge] IPC failed, beacon fallback:', err);
+                    reportViaBeacon(type, extra);
                 }});
                 return;
             }}
         }} catch(e) {{
             console.warn('[OrchestratorBridge] IPC exception:', e);
         }}
-
-        // FALLBACK: Image beacon (works when CSP allows img-src to localhost)
-        reportViaBeacon(payload);
+        // FALLBACK: image beacon
+        reportViaBeacon(type, extra);
     }}
 
-    function reportViaBeacon(payload) {{
-        const json  = JSON.stringify(payload);
+    function reportViaBeacon(type, extra) {{
+        const json  = JSON.stringify({{ type, panel_id: PANEL_ID, ...extra }});
         const CHUNK = 1800;
         const total = Math.ceil(json.length / CHUNK);
         const id    = `${{Date.now()}}-${{Math.random().toString(36).slice(2)}}`;
@@ -289,32 +281,32 @@ pub fn send_to_panel(app: AppHandle, state: State<'_, AppState>, panel_id: Strin
 
 #[tauri::command]
 pub fn bridge_event(
-    app:     AppHandle,
-    state:   State<'_, AppState>,
-    r#type:  String,
-    #[allow(non_snake_case)] panelId: String,
-    output:  Option<String>,
-    message: Option<String>,
+    app:        AppHandle,
+    state:      State<'_, AppState>,
+    event_type: String,
+    panel_id:   String,
+    output:     Option<String>,
+    message:    Option<String>,
 ) -> CmdResult<()> {
     use crate::bridge_server::*;
-    match r#type.as_str() {
+    match event_type.as_str() {
         "output" => {
             let out = output.unwrap_or_default();
-            state.store_output(&panelId, out.clone());
-            let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload { panel_id: panelId, output: Some(out), message: None });
+            state.store_output(&panel_id, out.clone());
+            let _ = app.emit(EVENT_PANEL_OUTPUT, PanelEventPayload { panel_id, output: Some(out), message: None });
         }
         "ready" => {
-            state.set_status(&panelId, PanelStatus::Idle);
-            let _ = app.emit(EVENT_PANEL_READY, PanelEventPayload { panel_id: panelId, output: None, message: None });
+            state.set_status(&panel_id, PanelStatus::Idle);
+            let _ = app.emit(EVENT_PANEL_READY, PanelEventPayload { panel_id, output: None, message: None });
         }
         "generating" => {
-            state.set_status(&panelId, PanelStatus::Generating);
-            let _ = app.emit(EVENT_PANEL_GENERATING, PanelEventPayload { panel_id: panelId, output: None, message: None });
+            state.set_status(&panel_id, PanelStatus::Generating);
+            let _ = app.emit(EVENT_PANEL_GENERATING, PanelEventPayload { panel_id, output: None, message: None });
         }
         "error" => {
             let msg = message.unwrap_or_else(|| "unknown".into());
-            state.set_status(&panelId, PanelStatus::Error { message: msg.clone() });
-            let _ = app.emit(EVENT_PANEL_ERROR, PanelEventPayload { panel_id: panelId, output: None, message: Some(msg) });
+            state.set_status(&panel_id, PanelStatus::Error { message: msg.clone() });
+            let _ = app.emit(EVENT_PANEL_ERROR, PanelEventPayload { panel_id, output: None, message: Some(msg) });
         }
         _ => {}
     }

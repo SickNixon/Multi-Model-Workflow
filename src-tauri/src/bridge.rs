@@ -128,115 +128,85 @@ const GEMINI_BRIDGE: &str = r#"
 "#;
 
 // ── DeepSeek (chat.deepseek.com) ─────────────────────────────────────────────
-// Input:  textarea (standard, not contenteditable)
-// Submit: Enter key or send button
-// Note:   DeepSeek has a "thinking" mode — output may have a <think> block.
-//         We capture full innerText which includes thinking; strip if needed.
-//
-// VERIFY: Selectors as of 2024. DeepSeek's input is a straightforward textarea.
+// CONFIRMED via diagnostic: textarea placeholder = "Message DeepSeek"
 const DEEPSEEK_BRIDGE: &str = r#"
 (function deepseekInit() {
-    const INPUT_SELECTORS = [
-        'textarea[placeholder*="Message"]',
-        'textarea[placeholder*="message"]',
-        '#chat-input',
-        'textarea',   // last-resort
-    ];
+    function setReactValue(el, value) {
+        try {
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            nativeSetter.call(el, value);
+            el.dispatchEvent(new Event('input',  { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch(e) { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }
+    }
 
-    const SEND_BTN_SELECTORS = [
-        'button[aria-label*="Send"]',
-        'button.send-button',
-        'div[role="button"][aria-label*="send"]',
-    ];
+    function findInput() {
+        // CONFIRMED: placeholder is "Message DeepSeek"
+        return document.querySelector('textarea[placeholder="Message DeepSeek"]')
+            || document.querySelector('textarea[placeholder*="Message"]')
+            || Array.from(document.querySelectorAll('textarea')).find(t => t.offsetParent);
+    }
 
-    const OUTPUT_SELECTORS = [
-        // The last assistant message content div
-        '.ds-markdown:last-of-type',
-        '.message-content.assistant:last-child',
-        '[class*="assistant"]:last-child [class*="content"]',
-        '[data-role="assistant"]:last-child',
-    ];
-
-    // React-controlled textarea value setter trick
-    // Standard element.value = ... doesn't trigger React's onChange
-    function setReactTextareaValue(el, value) {
-        const nativeSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-        ).set;
-        nativeSetter.call(el, value);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
+    function findSendBtn() {
+        // DeepSeek send button: look for button near the textarea
+        const btns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent);
+        return btns.find(b => {
+            const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+            return lbl.includes('send') || b.type === 'submit';
+        }) || null;
     }
 
     window.__orchestratorBridge.sendMessage = function(text) {
-        const input = trySelectors(INPUT_SELECTORS);
+        const input = findInput();
         if (!input) {
-            console.error('[OrchestratorBridge:deepseek] input not found. Check INPUT_SELECTORS.');
-            window.__orchestratorBridge.report('error', { message: 'input selector failed' });
+            window.__orchestratorBridge.report('error', { message: 'deepseek: input not found' });
             return;
         }
-
-        input.focus();
-        setReactTextareaValue(input, text);
-
+        setReactValue(input, text);
         setTimeout(() => {
-            const sendBtn = trySelectors(SEND_BTN_SELECTORS);
-            if (sendBtn) {
-                sendBtn.click();
-            } else {
+            const btn = findSendBtn();
+            if (btn) { btn.click(); }
+            else {
                 input.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter', code: 'Enter', keyCode: 13,
-                    bubbles: true, cancelable: true
+                    key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true
                 }));
             }
             window.__orchestratorBridge.report('generating', {});
             watchForCompletion();
-        }, 150);
+        }, 300);
     };
 
+    window.__orchestratorBridge.captureOutput = captureOutput;
+
     function watchForCompletion() {
-        let settled = false;
-        let lastMutationTime = Date.now();
-        const SETTLE_MS = 2500;
-
-        const responseArea =
-            document.querySelector('.chat-content') ||
-            document.querySelector('main') ||
-            document.body;
-
-        const observer = new MutationObserver(() => {
-            lastMutationTime = Date.now();
-        });
-
-        observer.observe(responseArea, {
-            childList: true, subtree: true, characterData: true,
-        });
-
+        let last = Date.now(), done = false;
+        const area = document.querySelector('main') || document.body;
+        const obs = new MutationObserver(() => { last = Date.now(); });
+        obs.observe(area, { childList: true, subtree: true, characterData: true });
         const poll = setInterval(() => {
-            if (Date.now() - lastMutationTime > SETTLE_MS) {
-                clearInterval(poll);
-                observer.disconnect();
-                if (!settled) {
-                    settled = true;
-                    extractAndReport();
-                }
+            if (Date.now() - last > 3000) {
+                clearInterval(poll); obs.disconnect();
+                if (!done) { done = true; captureOutput(); }
             }
-        }, 300);
+        }, 400);
     }
 
-    function extractAndReport() {
-        // Get all assistant messages and pick the last
-        const allOutputs = document.querySelectorAll(
-            '.ds-markdown, [class*="assistant"] [class*="content"], [data-role="assistant"]'
-        );
-        const outputEl = allOutputs.length > 0 ? allOutputs[allOutputs.length - 1] : null;
-        const output = outputEl
-            ? outputEl.innerText.trim()
-            : '[OrchestratorBridge:deepseek] output selector failed — check OUTPUT_SELECTORS';
+    function captureOutput() {
+        // DeepSeek uses ds-markdown class for responses
+        const els = Array.from(document.querySelectorAll([
+            '[class*="ds-markdown"]',
+            '[class*="markdown-body"]',
+            '[class*="chat-message"]:not([class*="input"])',
+            '[class*="message-content"]',
+        ].join(','))).filter(e => e.offsetParent && e.innerText?.trim().length > 5);
 
-        if (!outputEl) {
-            console.error('[OrchestratorBridge:deepseek] output not found.');
+        let output = els.length ? els[els.length - 1].innerText.trim() : '';
+        if (!output) {
+            const main = document.querySelector('main');
+            output = main ? main.innerText.trim().slice(-3000) : '[deepseek: no output found]';
         }
-
         window.__orchestratorBridge.report('output', { output });
     }
 })();
