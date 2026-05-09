@@ -338,74 +338,78 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
         Some(w) => w,
         None => return CmdResult::fail(format!("Panel {panel_id} not open")),
     };
-    let js = r#"
-(function() {
-    const diag = {
+
+    let pid = serde_json::to_string(&panel_id).unwrap();
+
+    let js = format!(r#"
+(function() {{
+    function sendOutput(text) {{
+        const payload = JSON.stringify({{ type: "output", panel_id: {pid}, output: text }});
+        const CHUNK = 1800;
+        const total = Math.ceil(payload.length / CHUNK);
+        const id    = Date.now() + '-cap';
+        for (let i = 0; i < total; i++) {{
+            const img = new Image();
+            img.src = `http://127.0.0.1:{port}/ping?id=${{id}}&i=${{i}}&t=${{total}}&d=${{encodeURIComponent(payload.slice(i*CHUNK,(i+1)*CHUNK))}}`;
+        }}
+    }}
+
+    // First try to capture actual output
+    if (window.__orchestratorBridge?.captureOutput) {{
+        window.__orchestratorBridge.captureOutput();
+        return;
+    }}
+
+    // Bridge not injected — run diagnostic and report as output
+    const diag = {{
+        bridgeInjected: !!window.__orchestratorBridge,
         url: location.href,
         isSecureContext: window.isSecureContext,
-        hasBridge: !!window.__orchestratorBridge,
-        speechAPI: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
         webkit: !!window.webkit,
         webkitHandlers: !!(window.webkit && window.webkit.messageHandlers),
+        speechAPI: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
         textareas: [],
         contenteditables: [],
         customEls: [],
         visibleButtons: [],
-        lastTextBlocks: [],
-    };
+    }};
 
-    document.querySelectorAll('textarea').forEach((e, i) => {
-        if (i < 8) diag.textareas.push({
-            ph: (e.placeholder || '').slice(0, 80),
-            cls: (e.className || '').slice(0, 80),
-            id: e.id,
-            visible: !!e.offsetParent,
-        });
-    });
+    document.querySelectorAll('textarea').forEach((e, i) => {{
+        if (i < 6) diag.textareas.push({{
+            ph: (e.placeholder||'').slice(0,80),
+            cls: (e.className||'').slice(0,80),
+            id: e.id, visible: !!e.offsetParent
+        }});
+    }});
 
-    document.querySelectorAll('[contenteditable]').forEach((e, i) => {
-        if (i < 8) diag.contenteditables.push({
+    document.querySelectorAll('[contenteditable]').forEach((e, i) => {{
+        if (i < 6) diag.contenteditables.push({{
             tag: e.tagName,
-            label: (e.getAttribute('aria-label') || '').slice(0, 80),
-            cls: (e.className || '').slice(0, 80),
-            visible: !!e.offsetParent,
-        });
-    });
+            label: (e.getAttribute('aria-label')||'').slice(0,80),
+            cls: (e.className||'').slice(0,80),
+            visible: !!e.offsetParent
+        }});
+    }});
 
-    // Check for custom elements (Gemini uses these)
-    ['model-response', 'message-content', 'chat-history', 'rich-textarea', 'bard-chat'].forEach(tag => {
+    ['model-response','message-content','chat-history','rich-textarea'].forEach(tag => {{
         const els = document.querySelectorAll(tag);
-        if (els.length) diag.customEls.push({ tag, count: els.length, lastCls: (els[els.length-1].className||'').slice(0,60) });
-    });
+        if (els.length) diag.customEls.push({{ tag, count: els.length }});
+    }});
 
-    // Visible buttons
-    document.querySelectorAll('button').forEach((e, i) => {
-        if (i < 20 && e.offsetParent) diag.visibleButtons.push({
-            label: (e.getAttribute('aria-label') || '').slice(0, 50),
-            txt: (e.innerText || '').slice(0, 30),
-            type: e.type,
-        });
-    });
+    document.querySelectorAll('button').forEach((e, i) => {{
+        if (i < 15 && e.offsetParent) diag.visibleButtons.push({{
+            label: (e.getAttribute('aria-label')||'').slice(0,50),
+            txt: (e.innerText||'').slice(0,30),
+        }});
+    }});
 
-    // Last text blocks (to find output containers)
-    const blocks = document.querySelectorAll('p, article, [role="article"], [role="main"] div');
-    const bigBlocks = Array.from(blocks).filter(e => e.offsetParent && (e.innerText||'').trim().length > 30);
-    bigBlocks.slice(-5).forEach(e => diag.lastTextBlocks.push({
-        tag: e.tagName,
-        cls: (e.className || '').slice(0, 60),
-        txt: (e.innerText || '').slice(0, 100),
-    }));
+    sendOutput('DIAGNOSTIC: ' + JSON.stringify(diag, null, 2));
+}})();
+"#,
+        pid  = pid,
+        port = BRIDGE_PORT,
+    );
 
-    const json = JSON.stringify(diag);
-    const CHUNK = 1800;
-    const total = Math.ceil(json.length / CHUNK);
-    const id = Date.now() + '-diag';
-    for (let i = 0; i < total; i++) {
-        const img = new Image();
-        img.src = `http://127.0.0.1:7539/ping?id=${id}&i=${i}&t=${total}&d=${encodeURIComponent(json.slice(i*CHUNK,(i+1)*CHUNK))}`;
-    }
-})();
-"#;
-    let _ = win.eval(js);
+    let _ = win.eval(&js);
     CmdResult::success(())
 }
