@@ -330,8 +330,8 @@ pub fn reset_panel_output(state: State<'_, AppState>, panel_id: String) -> CmdRe
     }
 }
 
-/// Manually trigger output capture in a panel — called by the CAPTURE button.
-/// Evals JS that calls the panel's own captureOutput() function.
+/// Manually trigger output capture + DOM diagnostic in a panel.
+/// Results come back via image beacon → panel:output event → message log.
 #[tauri::command]
 pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
     let win = match app.get_webview_window(&panel_id) {
@@ -340,16 +340,69 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
     };
     let js = r#"
 (function() {
-    if (window.__orchestratorBridge?.captureOutput) {
-        window.__orchestratorBridge.captureOutput();
-    } else {
-        // Generic fallback: grab last big text block on the page
-        const blocks = Array.from(document.querySelectorAll('p, div, article'))
-            .filter(el => el.offsetParent && el.innerText?.trim().length > 50);
-        const last = blocks[blocks.length - 1];
-        if (last && window.__orchestratorBridge) {
-            window.__orchestratorBridge.report('output', { output: last.innerText.trim() });
-        }
+    const diag = {
+        url: location.href,
+        isSecureContext: window.isSecureContext,
+        hasBridge: !!window.__orchestratorBridge,
+        speechAPI: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+        webkit: !!window.webkit,
+        webkitHandlers: !!(window.webkit && window.webkit.messageHandlers),
+        textareas: [],
+        contenteditables: [],
+        customEls: [],
+        visibleButtons: [],
+        lastTextBlocks: [],
+    };
+
+    document.querySelectorAll('textarea').forEach((e, i) => {
+        if (i < 8) diag.textareas.push({
+            ph: (e.placeholder || '').slice(0, 80),
+            cls: (e.className || '').slice(0, 80),
+            id: e.id,
+            visible: !!e.offsetParent,
+        });
+    });
+
+    document.querySelectorAll('[contenteditable]').forEach((e, i) => {
+        if (i < 8) diag.contenteditables.push({
+            tag: e.tagName,
+            label: (e.getAttribute('aria-label') || '').slice(0, 80),
+            cls: (e.className || '').slice(0, 80),
+            visible: !!e.offsetParent,
+        });
+    });
+
+    // Check for custom elements (Gemini uses these)
+    ['model-response', 'message-content', 'chat-history', 'rich-textarea', 'bard-chat'].forEach(tag => {
+        const els = document.querySelectorAll(tag);
+        if (els.length) diag.customEls.push({ tag, count: els.length, lastCls: (els[els.length-1].className||'').slice(0,60) });
+    });
+
+    // Visible buttons
+    document.querySelectorAll('button').forEach((e, i) => {
+        if (i < 20 && e.offsetParent) diag.visibleButtons.push({
+            label: (e.getAttribute('aria-label') || '').slice(0, 50),
+            txt: (e.innerText || '').slice(0, 30),
+            type: e.type,
+        });
+    });
+
+    // Last text blocks (to find output containers)
+    const blocks = document.querySelectorAll('p, article, [role="article"], [role="main"] div');
+    const bigBlocks = Array.from(blocks).filter(e => e.offsetParent && (e.innerText||'').trim().length > 30);
+    bigBlocks.slice(-5).forEach(e => diag.lastTextBlocks.push({
+        tag: e.tagName,
+        cls: (e.className || '').slice(0, 60),
+        txt: (e.innerText || '').slice(0, 100),
+    }));
+
+    const json = JSON.stringify(diag);
+    const CHUNK = 1800;
+    const total = Math.ceil(json.length / CHUNK);
+    const id = Date.now() + '-diag';
+    for (let i = 0; i < total; i++) {
+        const img = new Image();
+        img.src = `http://127.0.0.1:7539/ping?id=${id}&i=${i}&t=${total}&d=${encodeURIComponent(json.slice(i*CHUNK,(i+1)*CHUNK))}`;
     }
 })();
 "#;
