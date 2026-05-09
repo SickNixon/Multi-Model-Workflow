@@ -5,8 +5,24 @@ import { useStore } from '../store';
 
 interface Props { panelId: PanelId; info: PanelInfo | undefined; }
 
+// ── Shared style constants (declared before use) ───────────────────────────────
 const dot: React.CSSProperties = {
   display: 'inline-block', width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+};
+const card: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 10,
+  padding: '14px 16px', background: 'var(--bg-surface)',
+  border: '1px solid var(--border)', borderRadius: 6,
+  transition: 'border-color 0.2s, box-shadow 0.2s',
+};
+const row: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
+};
+const preview: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+  lineHeight: 1.5, minHeight: 36, padding: '6px 8px',
+  background: 'var(--bg-raised)', borderRadius: 3,
+  overflow: 'hidden', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
 };
 
 function StatusDot({ info, isBrowser }: { info: PanelInfo | undefined; isBrowser: boolean }) {
@@ -49,7 +65,7 @@ export function ModelCard({ panelId, info }: Props) {
   const hidePanel    = useStore(s => s.hidePanel);
   const capturePanel = useStore(s => s.capturePanel);
 
-  // Claude never loads in a WebView — Cloudflare Turnstile always blocks it.
+  // Claude never loads in a WebView — Cloudflare always wins.
   // OPEN → launches claude.ai in the system browser instead.
   const isBrowser    = panelId === 'claude';
   const status       = info?.status.status;
@@ -90,7 +106,7 @@ export function ModelCard({ panelId, info }: Props) {
         </div>
       )}
 
-      {/* Claude browser-only info */}
+      {/* Claude browser-only info blurb */}
       {isBrowser && (
         <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6, padding: '4px 0' }}>
           Claude opens in your system browser — Cloudflare blocks WebView access.
@@ -101,7 +117,6 @@ export function ModelCard({ panelId, info }: Props) {
       {/* Action buttons */}
       <div style={{ ...row, flexWrap: 'wrap', gap: 6 }}>
         {isBrowser ? (
-          /* Claude: single browser-open button */
           <button
             className="btn-primary"
             style={{ background: '#7c3aed', fontSize: 11 }}
@@ -120,53 +135,28 @@ export function ModelCard({ panelId, info }: Props) {
           </button>
         ) : (
           <>
-            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => showPanel(panelId)}>
-              VIEW
-            </button>
-            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => hidePanel(panelId)}>
-              HIDE
-            </button>
+            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => showPanel(panelId)}>VIEW</button>
+            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => hidePanel(panelId)}>HIDE</button>
             <button
               className="btn-ghost"
               style={{ fontSize: 11, color: 'var(--accent)', borderColor: 'var(--accent)' }}
               onClick={() => capturePanel(panelId)}
               title="Capture current output"
-            >
-              CAPTURE
-            </button>
+            >CAPTURE</button>
             <button
               className="btn-ghost"
               style={{ fontSize: 10, color: 'var(--text-dim)', borderColor: 'var(--border)' }}
               onClick={() => void invoke('open_panel_devtools', { panelId })}
-              title="Open DevTools for this panel (debug)"
-            >
-              DEV
-            </button>
+              title="Open DevTools — check window.__TAURI_INTERNALS__ in console"
+            >DEV</button>
             <button
               className="btn-ghost"
               style={{ fontSize: 11, color: 'var(--red)', borderColor: 'var(--red)', marginLeft: 'auto' }}
               onClick={() => closePanel(panelId)}
-            >
-              CLOSE
-            </button>
+            >CLOSE</button>
           </>
         )}
       </div>
     </div>
   );
-
-const card: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', gap: 10,
-  padding: '14px 16px', background: 'var(--bg-surface)',
-  border: '1px solid var(--border)', borderRadius: 6,
-  transition: 'border-color 0.2s, box-shadow 0.2s',
-};
-const row: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
-};
-const preview: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
-  lineHeight: 1.5, minHeight: 36, padding: '6px 8px',
-  background: 'var(--bg-raised)', borderRadius: 3,
-  overflow: 'hidden', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-};
+}
