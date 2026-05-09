@@ -435,44 +435,14 @@ const GROK_BRIDGE: &str = r#"
 "#;
 
 // ── Claude (claude.ai) ────────────────────────────────────────────────────────
-// CLOUDFLARE BYPASS: claude.ai uses Cloudflare Turnstile which detects
-// window.webkit.messageHandlers as a bot fingerprint (this object exists in
-// WKWebView but not in real browsers). We hide it after a 50ms delay — long
-// enough for Tauri's own init script to capture its reference, but before
-// Cloudflare runs its challenge. After hiding, we use beacon-only reporting
-// so we don't depend on the IPC bridge being accessible via window.webkit.
+// Cloudflare Turnstile runs on claude.ai. We do NOT hide window.webkit here —
+// hiding it breaks Cloudflare's own verification completion handshake (the
+// checkmark appears but the challenge never resolves). Instead we let Turnstile
+// run normally. The user clicks "Verify you are human" once per session and
+// the session cookie persists in ~/Library/WebKit/vibe-orchestrator/WebsiteData/.
+// This is the accepted trade-off for using a live WebView approach.
 const CLAUDE_BRIDGE: &str = r#"
 (function claudeInit() {
-    // ── Cloudflare bypass ─────────────────────────────────────────────────────
-    // Tauri's init script runs synchronously at document-start and captures a
-    // closure reference to webkit.messageHandlers.tauri. After that reference
-    // is captured (< 10ms), we can safely hide window.webkit from Cloudflare's
-    // bot detector (which runs after DOM parsing, well after our 50ms timeout).
-    setTimeout(() => {
-        try {
-            Object.defineProperty(window, 'webkit', {
-                get: () => undefined, configurable: true
-            });
-            console.log('[OrchestratorBridge:claude] webkit hidden from Cloudflare');
-        } catch(e) {
-            console.warn('[OrchestratorBridge:claude] could not hide webkit:', e);
-        }
-    }, 50);
-
-    // ── Beacon-only report override ───────────────────────────────────────────
-    // After hiding webkit, __TAURI_INTERNALS__.invoke may not work reliably.
-    // Use the local HTTP beacon exclusively for Claude's output reporting.
-    window.__orchestratorBridge.report = function(type, extra) {
-        const payload = JSON.stringify({ type, panel_id: PANEL_ID, ...extra });
-        const CHUNK = 1800;
-        const total = Math.ceil(payload.length / CHUNK);
-        const id = Date.now() + '-cl-' + Math.random().toString(36).slice(2);
-        for (let i = 0; i < total; i++) {
-            const img = new Image();
-            img.src = `http://127.0.0.1:${BRIDGE_PORT}/ping?id=${id}&i=${i}&t=${total}&d=${encodeURIComponent(payload.slice(i * CHUNK, (i + 1) * CHUNK))}`;
-        }
-    };
-
     // ── Input / submit ────────────────────────────────────────────────────────
     const INPUT_SELECTORS = [
         'div[contenteditable="true"].ProseMirror',
