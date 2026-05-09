@@ -60,8 +60,28 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
     try {
       const result = await invoke<CmdResult<PanelInfo[]>>('get_panel_states');
       if (result.ok && result.data) {
+        // Merge Rust state into React store without clobbering event-driven status.
+        // Rust is authoritative for: closed detection, URL, label.
+        // React store is authoritative for: live status (idle/generating/done/error),
+        // last_output — these are set by Tauri events, not polling.
+        const current = useStore.getState().panels;
         const map = {} as Record<PanelId, PanelInfo>;
-        for (const p of result.data) map[p.id as PanelId] = p;
+        for (const p of result.data) {
+          const existing = current[p.id as PanelId];
+          const rustClosed = p.status.status === 'closed';
+          if (!existing || rustClosed) {
+            // First load, or Rust says the window is actually gone — trust Rust
+            map[p.id as PanelId] = p;
+          } else {
+            // Panel exists in React: preserve React's live status and output,
+            // update only structural fields (url, label) from Rust
+            map[p.id as PanelId] = {
+              ...p,
+              status:      existing.status,
+              last_output: existing.last_output,
+            };
+          }
+        }
         set({ panels: map });
       }
       const portResult = await invoke<CmdResult<number>>('get_bridge_port');

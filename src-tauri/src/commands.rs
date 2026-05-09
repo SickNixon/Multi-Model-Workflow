@@ -64,11 +64,28 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
         return null;
     }}
 
-    // Beacon-only report — image requests to the local bridge server at 127.0.0.1:{port}
-    // are the universal transport: confirmed working from all external WebViews
-    // regardless of Tauri IPC capability settings or site CSP.
-    // (IPC silently swallowed panel events due to permission model — removed.)
+    // Two-path report — covers all sites regardless of CSP strictness:
+    //
+    // PRIMARY: plugin:event|emit — emits a Tauri event directly via the native
+    //   webkit.messageHandlers bridge. CSP CANNOT block this (it is not HTTP).
+    //   Bypasses our custom bridge_event command entirely, goes straight to the
+    //   Tauri event bus. React's listen() receives it instantly.
+    //
+    // FALLBACK: image beacon — works for sites with permissive CSP (e.g. DeepSeek)
+    //   but blocked by Google/X CSP. Kept as backup.
+    const __TAURI_EVENTS = {{
+        output: 'panel:output', ready: 'panel:ready',
+        generating: 'panel:generating', error: 'panel:error',
+    }};
     function report(type, extra) {{
+        const tauriEvent = __TAURI_EVENTS[type];
+        if (tauriEvent && window.__TAURI_INTERNALS__?.invoke) {{
+            window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {{
+                event:   tauriEvent,
+                payload: {{ panel_id: PANEL_ID, output: extra?.output ?? null, message: extra?.message ?? null }},
+            }}).catch(() => reportViaBeacon(type, extra));
+            return;
+        }}
         reportViaBeacon(type, extra);
     }}
 
