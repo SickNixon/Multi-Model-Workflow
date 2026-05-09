@@ -79,19 +79,29 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     //
     // FALLBACK: image beacon — belt-and-suspenders if __TAURI_INTERNALS__ absent.
     //   Still works for DeepSeek (permissive img-src CSP).
+    // State store — Rust polls this via eval() instead of waiting for push events.
+    // This sidesteps ALL CSP and IPC permission issues entirely.
+    // Rust calls win.eval("JSON.stringify(window.__orchestratorBridge.__state)")
+    // and gets back the current state snapshot.
+    window.__orchestratorState = {{
+        panelId:    PANEL_ID,
+        status:     'loading',   // loading | ready | generating | done | error
+        output:     null,
+        outputSeq:  0,           // increments each time new output is stored
+        error:      null,
+    }};
+
     function report(type, extra) {{
-        if (window.__TAURI_INTERNALS__?.invoke) {{
-            window.__TAURI_INTERNALS__.invoke('bridge_event', {{
-                event_type: type,
-                panel_id:   PANEL_ID,
-                output:     extra?.output ?? null,
-                message:    extra?.message ?? null,
-            }}).catch(err => {{
-                console.warn('[OrchestratorBridge] IPC invoke failed, falling back to beacon:', err);
-                reportViaBeacon(type, extra);
-            }});
-            return;
+        const s = window.__orchestratorState;
+        if (type === 'ready')      {{ s.status = 'ready'; }}
+        if (type === 'generating') {{ s.status = 'generating'; }}
+        if (type === 'error')      {{ s.status = 'error'; s.error = extra?.message ?? 'unknown'; }}
+        if (type === 'output')     {{
+            s.status    = 'done';
+            s.output    = extra?.output ?? '';
+            s.outputSeq = (s.outputSeq || 0) + 1;
         }}
+        // Also try beacon as opportunistic push for DeepSeek (permissive CSP)
         reportViaBeacon(type, extra);
     }}
 
@@ -292,10 +302,81 @@ pub fn send_to_panel(app: AppHandle, state: State<'_, AppState>, panel_id: Strin
     let escaped = message.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
     let js = format!(r#"(function(){{
     if (!window.__orchestratorBridge?.sendMessage) {{ console.error('[OrchestratorBridge] not ready on {pid}'); return; }}
+    // Reset state before sending so we can detect fresh output
+    if (window.__orchestratorState) {{
+        window.__orchestratorState.status    = 'generating';
+        window.__orchestratorState.output    = null;
+        window.__orchestratorState.outputSeq = window.__orchestratorState.outputSeq || 0;
+    }}
     window.__orchestratorBridge.sendMessage(`{msg}`);
-}})();"#, pid=panel_id, msg=escaped);
+}})();"#, pid = panel_id, msg = escaped);
+
     match win.eval(&js) {
-        Ok(_) => { state.set_status(&panel_id, PanelStatus::Generating); CmdResult::success(()) }
+        Ok(_) => {
+            state.set_status(&panel_id, PanelStatus::Generating);
+            let _ = app.emit(crate::bridge_server::EVENT_PANEL_GENERATING,
+                crate::bridge_server::PanelEventPayload { panel_id: panel_id.clone(), output: None, message: None });
+
+            // Rust polls window.__orchestratorState every second.
+            // This bypasses ALL CSP/IPC issues — Rust → WebView eval is always allowed.
+            let app2     = app.clone();
+            let pid      = panel_id.clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                    if std::time::Instant::now() > deadline { break; }
+
+                    let win2 = match app2.get_webview_window(&pid) {
+                        Some(w) => w,
+                        None    => break,
+                    };
+
+                    // Eval returns JSON string of current state
+                    let snapshot_js = "JSON.stringify(window.__orchestratorState || null)";
+                    if win2.eval(snapshot_js).is_err() { break; }
+
+                    // We can't get a return value from eval() in Tauri 2 directly,
+                    // so instead we eval a beacon that fires only when done.
+                    let poll_js = format!(r#"
+(function() {{
+    const s = window.__orchestratorState;
+    if (!s || s.status !== 'done') return;
+    const seq = s.outputSeq || 0;
+    const last = window.__lastReportedSeq || 0;
+    if (seq <= last) return;
+    window.__lastReportedSeq = seq;
+    // Beacon back — Rust is listening
+    const json  = JSON.stringify({{ type:'output', panel_id:{pid_json}, output: s.output || '' }});
+    const CHUNK = 1800;
+    const total = Math.ceil(json.length / CHUNK);
+    const id    = Date.now() + '-poll';
+    for (let i = 0; i < total; i++) {{
+        const img = new Image();
+        img.src = `http://127.0.0.1:{port}/ping?id=${{id}}&i=${{i}}&t=${{total}}&d=${{encodeURIComponent(json.slice(i*CHUNK,(i+1)*CHUNK))}}`;
+    }}
+}})();
+"#,
+                        pid_json = serde_json::to_string(&pid).unwrap(),
+                        port     = crate::bridge_server::BRIDGE_PORT,
+                    );
+
+                    if win2.eval(&poll_js).is_ok() {
+                        // Check if Rust state shows done (beacon fired, bridge_server updated it)
+                        let app_state = app2.state::<AppState>();
+                        let panels    = app_state.panels.lock().unwrap();
+                        if let Some(p) = panels.get(&pid) {
+                            if matches!(p.status, PanelStatus::Idle) {
+                                break; // output received and processed
+                            }
+                        }
+                    }
+                }
+            });
+
+            CmdResult::success(())
+        }
         Err(e) => CmdResult::fail(format!("eval failed: {e}")),
     }
 }
