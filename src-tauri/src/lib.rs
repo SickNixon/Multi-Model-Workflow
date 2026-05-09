@@ -47,6 +47,8 @@ pub fn run() {
             commands::reset_panel_output,
             commands::capture_panel_output,
             commands::bridge_event,
+            commands::reset_claude_session,
+            commands::open_in_browser,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vibe-orchestrator");

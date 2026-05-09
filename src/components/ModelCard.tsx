@@ -1,25 +1,43 @@
 // src/components/ModelCard.tsx
+import { invoke } from '@tauri-apps/api/core';
 import { type PanelId, type PanelInfo, PANEL_COLORS } from '../types';
 import { useStore } from '../store';
 
 interface Props { panelId: PanelId; info: PanelInfo | undefined; }
 
-const dot: React.CSSProperties = { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', flexShrink: 0 };
+const dot: React.CSSProperties = {
+  display: 'inline-block', width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+};
 
 function StatusDot({ info }: { info: PanelInfo | undefined }) {
   const s = info?.status.status;
-  const colors: Record<string, string> = { loading: '#7fa8c2', idle: '#22c55e', generating: 'var(--amber)', done: '#22c55e', error: '#ef4444' };
+  const colors: Record<string, string> = {
+    loading: '#7fa8c2', idle: '#22c55e', generating: 'var(--amber)', done: '#22c55e', error: '#ef4444',
+  };
   const isGen = s === 'generating';
   if (!s || s === 'closed') return <span style={{ ...dot, background: 'var(--text-dim)' }} />;
-  return <span style={{ ...dot, background: colors[s] ?? 'var(--text-dim)',
-    animationName: isGen ? 'pulse-amber' : 'none', animationDuration: '1.4s', animationIterationCount: 'infinite' }} />;
+  return <span style={{
+    ...dot, background: colors[s] ?? 'var(--text-dim)',
+    animationName: isGen ? 'pulse-amber' : 'none',
+    animationDuration: '1.4s', animationIterationCount: 'infinite',
+  }} />;
 }
 
 function StatusLabel({ info }: { info: PanelInfo | undefined }) {
   const s = info?.status.status ?? 'closed';
-  const labels: Record<string, string> = { closed: 'CLOSED', loading: 'LOADING…', idle: 'READY', generating: 'GENERATING…', done: 'DONE', error: 'ERROR' };
-  const colours: Record<string, string> = { closed: 'var(--text-dim)', loading: 'var(--text-secondary)', idle: 'var(--green)', generating: 'var(--amber)', done: 'var(--green)', error: 'var(--red)' };
-  return <span style={{ color: colours[s] ?? 'var(--muted)', fontSize: 10, letterSpacing: '0.1em' }}>{labels[s] ?? s.toUpperCase()}</span>;
+  const labels: Record<string, string> = {
+    closed: 'CLOSED', loading: 'LOADING…', idle: 'READY',
+    generating: 'GENERATING…', done: 'DONE', error: 'ERROR',
+  };
+  const colours: Record<string, string> = {
+    closed: 'var(--text-dim)', loading: 'var(--text-secondary)', idle: 'var(--green)',
+    generating: 'var(--amber)', done: 'var(--green)', error: 'var(--red)',
+  };
+  return (
+    <span style={{ color: colours[s] ?? 'var(--muted)', fontSize: 10, letterSpacing: '0.1em' }}>
+      {labels[s] ?? s.toUpperCase()}
+    </span>
+  );
 }
 
 export function ModelCard({ panelId, info }: Props) {
@@ -28,46 +46,136 @@ export function ModelCard({ panelId, info }: Props) {
   const showPanel    = useStore(s => s.showPanel);
   const hidePanel    = useStore(s => s.hidePanel);
   const capturePanel = useStore(s => s.capturePanel);
+  const refreshPanels = useStore(s => s.refreshPanels);
 
   const status       = info?.status.status;
   const isOpen       = status !== 'closed' && status !== undefined;
   const isGenerating = status === 'generating';
+  const isClaude     = panelId === 'claude';
+  const isError      = status === 'error';
   const accentColor  = PANEL_COLORS[panelId];
 
+  async function handleResetClaude() {
+    // Close the panel first, wipe session, reopen fresh
+    await closePanel(panelId);
+    await invoke('reset_claude_session');
+    setTimeout(() => openPanel(panelId), 600);
+  }
+
+  async function handleLoginInBrowser() {
+    await invoke('open_in_browser', { url: 'https://claude.ai' });
+  }
+
   return (
-    <div style={{ ...card, borderColor: isOpen ? accentColor : 'var(--border)', boxShadow: isOpen ? `0 0 12px ${accentColor}22` : 'none' }}>
+    <div style={{
+      ...card,
+      borderColor: isOpen ? accentColor : 'var(--border)',
+      boxShadow:   isOpen ? `0 0 12px ${accentColor}22` : 'none',
+    }}>
+      {/* Header row */}
       <div style={row}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <StatusDot info={info} />
-          <span className="display" style={{ fontSize: 20, color: accentColor }}>{panelId.toUpperCase()}</span>
+          <span className="display" style={{ fontSize: 20, color: accentColor }}>
+            {panelId.toUpperCase()}
+          </span>
         </div>
         <StatusLabel info={info} />
       </div>
 
-      <div style={{ ...preview, opacity: isOpen ? 1 : 0.3,
+      {/* Output preview */}
+      <div style={{
+        ...preview,
+        opacity: isOpen ? 1 : 0.3,
         animationName: isGenerating ? 'pulse-amber' : 'none',
-        animationDuration: '1.4s', animationIterationCount: 'infinite' }}>
-        {isGenerating ? '▌  generating…'
+        animationDuration: '1.4s', animationIterationCount: 'infinite',
+      }}>
+        {isGenerating
+          ? '▌  generating…'
           : (info?.last_output
             ? info.last_output.slice(0, 140) + (info.last_output.length > 140 ? '…' : '')
             : '— no output yet —')}
       </div>
 
+      {/* Claude-specific Cloudflare warning + helpers */}
+      {isClaude && isOpen && (isError || status === 'loading') && (
+        <div style={{
+          fontSize: 10, color: 'var(--amber)', background: 'var(--bg-raised)',
+          borderRadius: 3, padding: '5px 8px', lineHeight: 1.5,
+        }}>
+          Cloudflare challenge detected.{' '}
+          <span
+            style={{ textDecoration: 'underline', cursor: 'pointer' }}
+            onClick={() => showPanel(panelId)}
+          >
+            Click VIEW to verify
+          </span>
+          {' '}or{' '}
+          <span
+            style={{ textDecoration: 'underline', cursor: 'pointer' }}
+            onClick={handleLoginInBrowser}
+          >
+            open in {navigator.userAgent.includes('Edg') ? 'Edge' : 'browser'}
+          </span>
+        </div>
+      )}
+
+      {/* Action buttons */}
       <div style={{ ...row, flexWrap: 'wrap', gap: 6 }}>
         {!isOpen ? (
-          <button className="btn-primary" style={{ background: accentColor, fontSize: 11 }} onClick={() => openPanel(panelId)}>OPEN</button>
+          <button
+            className="btn-primary"
+            style={{ background: accentColor, fontSize: 11 }}
+            onClick={() => openPanel(panelId)}
+          >
+            OPEN
+          </button>
         ) : (
           <>
-            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => showPanel(panelId)}>VIEW</button>
-            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => hidePanel(panelId)}>HIDE</button>
-            {isOpen && (
-              <button className="btn-ghost" style={{ fontSize: 11, color: 'var(--accent)', borderColor: 'var(--accent)' }}
-                onClick={() => capturePanel(panelId)} title="Run DOM diagnostic + capture output">
-                CAPTURE
-              </button>
+            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => showPanel(panelId)}>
+              VIEW
+            </button>
+            <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => hidePanel(panelId)}>
+              HIDE
+            </button>
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 11, color: 'var(--accent)', borderColor: 'var(--accent)' }}
+              onClick={() => capturePanel(panelId)}
+              title="Capture current output"
+            >
+              CAPTURE
+            </button>
+
+            {/* Claude-only: reset session + browser login */}
+            {isClaude && (
+              <>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 11, color: 'var(--amber)', borderColor: 'var(--amber)' }}
+                  onClick={handleResetClaude}
+                  title="Wipe Claude session and reopen fresh"
+                >
+                  RESET
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 11, color: '#a78bfa', borderColor: '#a78bfa' }}
+                  onClick={handleLoginInBrowser}
+                  title="Open claude.ai in your default browser to login, then come back"
+                >
+                  BROWSER LOGIN
+                </button>
+              </>
             )}
-            <button className="btn-ghost" style={{ fontSize: 11, color: 'var(--red)', borderColor: 'var(--red)', marginLeft: 'auto' }}
-              onClick={() => closePanel(panelId)}>CLOSE</button>
+
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 11, color: 'var(--red)', borderColor: 'var(--red)', marginLeft: 'auto' }}
+              onClick={() => closePanel(panelId)}
+            >
+              CLOSE
+            </button>
           </>
         )}
       </div>
@@ -75,6 +183,18 @@ export function ModelCard({ panelId, info }: Props) {
   );
 }
 
-const card: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, padding: '14px 16px', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, transition: 'border-color 0.2s, box-shadow 0.2s' };
-const row:  React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 };
-const preview: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5, minHeight: 36, padding: '6px 8px', background: 'var(--bg-raised)', borderRadius: 3, overflow: 'hidden', whiteSpace: 'pre-wrap', wordBreak: 'break-word' };
+const card: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 10,
+  padding: '14px 16px', background: 'var(--bg-surface)',
+  border: '1px solid var(--border)', borderRadius: 6,
+  transition: 'border-color 0.2s, box-shadow 0.2s',
+};
+const row: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
+};
+const preview: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+  lineHeight: 1.5, minHeight: 36, padding: '6px 8px',
+  background: 'var(--bg-raised)', borderRadius: 3,
+  overflow: 'hidden', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+};

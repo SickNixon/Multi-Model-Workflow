@@ -4,6 +4,8 @@ use crate::bridge::get_bridge_script;
 use crate::bridge_server::BRIDGE_PORT;
 use crate::state::{AppState, PanelInfo, PanelStatus};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_shell::ShellExt;
+use std::fs;
 
 #[derive(Debug, serde::Serialize)]
 pub struct CmdResult<T: serde::Serialize> {
@@ -17,17 +19,9 @@ impl<T: serde::Serialize> CmdResult<T> {
 }
 
 // ── Anti-bot script ───────────────────────────────────────────────────────────
-// Hides WKWebView fingerprints that Cloudflare Turnstile detects.
-// Most importantly: window.webkit.messageHandlers — present in WKWebView, absent in real browsers.
 const ANTI_BOT_SCRIPT: &str = r#"
 (function() {
-    // Remove WebDriver flag — biggest automation detector
     try { Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e) {}
-
-    // NOTE: We do NOT hide window.webkit.messageHandlers because Tauri's native
-    // IPC bridge depends on it. Without it, __TAURI_INTERNALS__.invoke() fails,
-    // which is our primary channel for getting output back from AI panels.
-
     try {
         Object.defineProperty(navigator, 'plugins', {
             get: () => { const p = [
@@ -37,7 +31,6 @@ const ANTI_BOT_SCRIPT: &str = r#"
             ]; p.__proto__ = PluginArray.prototype; return p; }, configurable: true
         });
     } catch(e) {}
-
     try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true }); } catch(e) {}
     try { if (!window.chrome) window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} }; } catch(e) {}
     try {
@@ -47,8 +40,6 @@ const ANTI_BOT_SCRIPT: &str = r#"
     } catch(e) {}
 })();
 "#;
-
-// ── Init script builder ───────────────────────────────────────────────────────
 
 fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     format!(r#"
@@ -64,33 +55,15 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
         return null;
     }}
 
-    // Two-path report — covers all sites regardless of CSP strictness:
-    //
-    // PRIMARY: invoke('bridge_event') — custom app commands bypass Tauri's ACL
-    //   system entirely and work from ANY WebView, including external sites like
-    //   Gemini and Grok. Goes via webkit.messageHandlers (native bridge), which
-    //   CSP cannot block. The Rust handler calls app.emit() to broadcast to ALL
-    //   windows, so the React orchestrator window hears it via listen().
-    //
-    // WHY NOT plugin:event|emit: That is a Tauri plugin command — it requires
-    //   core:event:allow-emit in capabilities. Panel windows were not in any
-    //   capability, so it silently rejected → fell through to beacon → Gemini/Grok
-    //   CSP blocked the beacon → nothing. That was the entire bug.
-    //
-    // FALLBACK: image beacon — belt-and-suspenders if __TAURI_INTERNALS__ absent.
-    //   Still works for DeepSeek (permissive img-src CSP).
-    // State store — Rust polls this via eval() instead of waiting for push events.
-    // This sidesteps ALL CSP and IPC permission issues entirely.
-    // Rust calls win.eval("JSON.stringify(window.__orchestratorBridge.__state)")
-    // and gets back the current state snapshot.
     window.__orchestratorState = {{
         panelId:    PANEL_ID,
-        status:     'loading',   // loading | ready | generating | done | error
+        status:     'loading',
         output:     null,
-        outputSeq:  0,           // increments each time new output is stored
+        outputSeq:  0,
         error:      null,
     }};
 
+    // PRIMARY: Native IPC (bypasses ALL CSP)
     function report(type, extra) {{
         const s = window.__orchestratorState;
         if (type === 'ready')      {{ s.status = 'ready'; }}
@@ -101,8 +74,18 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
             s.output    = extra?.output ?? '';
             s.outputSeq = (s.outputSeq || 0) + 1;
         }}
-        // Also try beacon as opportunistic push for DeepSeek (permissive CSP)
-        reportViaBeacon(type, extra);
+
+        // IPC call – now available thanks to capabilities
+        if (window.__TAURI_INTERNALS__?.invoke) {{
+            window.__TAURI_INTERNALS__.invoke('bridge_event', {{
+                event_type: type,
+                panel_id:   PANEL_ID,
+                output:     extra?.output ?? null,
+                message:    extra?.message ?? null
+            }}).catch(() => reportViaBeacon(type, extra));
+        }} else {{
+            reportViaBeacon(type, extra);
+        }}
     }}
 
     function reportViaBeacon(type, extra) {{
@@ -123,9 +106,6 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     {bridge_script}
 
     function fireReady() {{
-        // Bridge can veto or override the ready signal by setting __readyCheck.
-        // Return true = proceed normally. Return string = report that as error msg.
-        // Return false = veto silently (bridge will fire ready itself when appropriate).
         const check = window.__orchestratorBridge?.__readyCheck;
         if (typeof check === 'function') {{
             const result = check();
@@ -137,8 +117,7 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     if (document.readyState === 'complete') {{ fireReady(); }}
     else {{ window.addEventListener('load', fireReady); }}
 
-    // Auto-diagnostic: 4 seconds after load, dump DOM structure to /tmp
-    // so the dev can read it without opening DevTools
+    // Auto‑diagnostic (kept)
     window.addEventListener('load', function() {{
         setTimeout(() => {{
             const diag = {{
@@ -155,10 +134,10 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
                     cls: (e.className||'').slice(0,60), tag: e.tagName, vis: !!e.offsetParent
                 }})),
                 shadowHosts: Array.from(document.querySelectorAll('*')).filter(e=>e.shadowRoot).map(e=>e.tagName).slice(0,10),
-                buttons: Array.from(document.querySelectorAll('button')).filter(e=>e.offsetParent).slice(0,12).map(e=>(({{
+                buttons: Array.from(document.querySelectorAll('button')).filter(e=>e.offsetParent).slice(0,12).map(e=>({{
                     label: (e.getAttribute('aria-label')||'').slice(0,40),
                     txt: (e.innerText||'').slice(0,20)
-                }}))),
+                }})),
                 responseEls: ['model-response','message-content','[data-message-author-role]','[class*="markdown"]','[class*="response"]'].map(sel => {{
                     try {{ const els = document.querySelectorAll(sel); return {{sel, count: els.length, sampleClass: els[0]?.className?.slice(0,60)}}; }}
                     catch(ex) {{ return {{sel, err: ex.message}}; }}
@@ -179,11 +158,8 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
     )
 }
 
-// ── Idle fallback timer ───────────────────────────────────────────────────────
-
+// ── Idle fallback (skip Claude) ──────────────────────────────────────────────
 fn schedule_idle_fallback(app: AppHandle, panel_id: String) {
-    // Claude uses Cloudflare Turnstile — auto-promoting to READY is misleading.
-    // The JS fireReady() now handles it correctly via __readyCheck.
     if panel_id == "claude" { return; }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
@@ -200,8 +176,7 @@ fn schedule_idle_fallback(app: AppHandle, panel_id: String) {
     });
 }
 
-// ── Core open logic (shared by command + auto-open on startup) ────────────────
-
+// ── Open panel (shared) ──────────────────────────────────────────────────────
 pub fn open_panel_window(app: &AppHandle, panel_id: &str) {
     if app.get_webview_window(panel_id).is_some() { return; }
 
@@ -236,7 +211,7 @@ pub fn open_panel_window(app: &AppHandle, panel_id: &str) {
     }
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── Commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_panel_states(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<PanelInfo>> {
@@ -302,7 +277,6 @@ pub fn send_to_panel(app: AppHandle, state: State<'_, AppState>, panel_id: Strin
     let escaped = message.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
     let js = format!(r#"(function(){{
     if (!window.__orchestratorBridge?.sendMessage) {{ console.error('[OrchestratorBridge] not ready on {pid}'); return; }}
-    // Reset state before sending so we can detect fresh output
     if (window.__orchestratorState) {{
         window.__orchestratorState.status    = 'generating';
         window.__orchestratorState.output    = null;
@@ -317,64 +291,7 @@ pub fn send_to_panel(app: AppHandle, state: State<'_, AppState>, panel_id: Strin
             let _ = app.emit(crate::bridge_server::EVENT_PANEL_GENERATING,
                 crate::bridge_server::PanelEventPayload { panel_id: panel_id.clone(), output: None, message: None });
 
-            // Rust polls window.__orchestratorState every second.
-            // This bypasses ALL CSP/IPC issues — Rust → WebView eval is always allowed.
-            let app2     = app.clone();
-            let pid      = panel_id.clone();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                    if std::time::Instant::now() > deadline { break; }
-
-                    let win2 = match app2.get_webview_window(&pid) {
-                        Some(w) => w,
-                        None    => break,
-                    };
-
-                    // Eval returns JSON string of current state
-                    let snapshot_js = "JSON.stringify(window.__orchestratorState || null)";
-                    if win2.eval(snapshot_js).is_err() { break; }
-
-                    // We can't get a return value from eval() in Tauri 2 directly,
-                    // so instead we eval a beacon that fires only when done.
-                    let poll_js = format!(r#"
-(function() {{
-    const s = window.__orchestratorState;
-    if (!s || s.status !== 'done') return;
-    const seq = s.outputSeq || 0;
-    const last = window.__lastReportedSeq || 0;
-    if (seq <= last) return;
-    window.__lastReportedSeq = seq;
-    // Beacon back — Rust is listening
-    const json  = JSON.stringify({{ type:'output', panel_id:{pid_json}, output: s.output || '' }});
-    const CHUNK = 1800;
-    const total = Math.ceil(json.length / CHUNK);
-    const id    = Date.now() + '-poll';
-    for (let i = 0; i < total; i++) {{
-        const img = new Image();
-        img.src = `http://127.0.0.1:{port}/ping?id=${{id}}&i=${{i}}&t=${{total}}&d=${{encodeURIComponent(json.slice(i*CHUNK,(i+1)*CHUNK))}}`;
-    }}
-}})();
-"#,
-                        pid_json = serde_json::to_string(&pid).unwrap(),
-                        port     = crate::bridge_server::BRIDGE_PORT,
-                    );
-
-                    if win2.eval(&poll_js).is_ok() {
-                        // Check if Rust state shows done (beacon fired, bridge_server updated it)
-                        let app_state = app2.state::<AppState>();
-                        let panels    = app_state.panels.lock().unwrap();
-                        if let Some(p) = panels.get(&pid) {
-                            if matches!(p.status, PanelStatus::Idle) {
-                                break; // output received and processed
-                            }
-                        }
-                    }
-                }
-            });
-
+            // NO polling loop – IPC will deliver output event
             CmdResult::success(())
         }
         Err(e) => CmdResult::fail(format!("eval failed: {e}")),
@@ -424,8 +341,6 @@ pub fn reset_panel_output(state: State<'_, AppState>, panel_id: String) -> CmdRe
     }
 }
 
-/// Manually trigger output capture + DOM diagnostic in a panel.
-/// Results come back via image beacon → panel:output event → message log.
 #[tauri::command]
 pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
     let win = match app.get_webview_window(&panel_id) {
@@ -434,11 +349,8 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
     };
 
     let pid = serde_json::to_string(&panel_id).unwrap();
-
     let js = format!(r#"
 (function() {{
-    // Use IPC first (works on all panels now that withGlobalTauri=true),
-    // fall back to beacon for belt-and-suspenders.
     function sendOutput(text) {{
         if (window.__TAURI_INTERNALS__?.invoke) {{
             window.__TAURI_INTERNALS__.invoke('bridge_event', {{
@@ -462,62 +374,62 @@ pub fn capture_panel_output(app: AppHandle, panel_id: String) -> CmdResult<()> {
         }}
     }}
 
-    // First try the bridge's own captureOutput
     if (window.__orchestratorBridge?.captureOutput) {{
         window.__orchestratorBridge.captureOutput();
         return;
     }}
 
-    // Bridge not injected — run diagnostic and report as output
     const diag = {{
         bridgeInjected: !!window.__orchestratorBridge,
         url: location.href,
         isSecureContext: window.isSecureContext,
         webkit: !!window.webkit,
-        webkitHandlers: !!(window.webkit && window.webkit.messageHandlers),
-        speechAPI: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
-        textareas: [],
-        contenteditables: [],
-        customEls: [],
-        visibleButtons: [],
+        tauriInternals: !!window.__TAURI_INTERNALS__,
+        textareas: Array.from(document.querySelectorAll('textarea')).slice(0,6).map(e => ({{
+            ph: (e.placeholder||'').slice(0,80), cls: (e.className||'').slice(0,80), id: e.id, visible: !!e.offsetParent
+        }})),
+        contenteditables: Array.from(document.querySelectorAll('[contenteditable]')).slice(0,6).map(e => ({{
+            tag: e.tagName, label: (e.getAttribute('aria-label')||'').slice(0,80), cls: (e.className||'').slice(0,80), visible: !!e.offsetParent
+        }})),
+        visibleButtons: Array.from(document.querySelectorAll('button')).slice(0,15).filter(e=>e.offsetParent).map(e=>({{
+            label: (e.getAttribute('aria-label')||'').slice(0,50), txt: (e.innerText||'').slice(0,30)
+        }})),
     }};
-
-    document.querySelectorAll('textarea').forEach((e, i) => {{
-        if (i < 6) diag.textareas.push({{
-            ph: (e.placeholder||'').slice(0,80),
-            cls: (e.className||'').slice(0,80),
-            id: e.id, visible: !!e.offsetParent
-        }});
-    }});
-
-    document.querySelectorAll('[contenteditable]').forEach((e, i) => {{
-        if (i < 6) diag.contenteditables.push({{
-            tag: e.tagName,
-            label: (e.getAttribute('aria-label')||'').slice(0,80),
-            cls: (e.className||'').slice(0,80),
-            visible: !!e.offsetParent
-        }});
-    }});
-
-    ['model-response','message-content','chat-history','rich-textarea'].forEach(tag => {{
-        const els = document.querySelectorAll(tag);
-        if (els.length) diag.customEls.push({{ tag, count: els.length }});
-    }});
-
-    document.querySelectorAll('button').forEach((e, i) => {{
-        if (i < 15 && e.offsetParent) diag.visibleButtons.push({{
-            label: (e.getAttribute('aria-label')||'').slice(0,50),
-            txt: (e.innerText||'').slice(0,30),
-        }});
-    }});
-
     sendOutput('DIAGNOSTIC: ' + JSON.stringify(diag, null, 2));
 }})();
-"#,
-        pid  = pid,
-        port = BRIDGE_PORT,
-    );
+"#, pid = pid, port = BRIDGE_PORT);
 
     let _ = win.eval(&js);
+    CmdResult::success(())
+}
+
+// ── NEW: Actually working reset and browser open ─────────────────────────────
+
+#[tauri::command]
+pub fn reset_claude_session(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    // Close Claude window if open
+    if let Some(win) = app.get_webview_window("claude") {
+        let _ = win.close();
+    }
+    state.set_status("claude", PanelStatus::Closed);
+
+    // Wipe the session directory so Turnstile is fresh
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vibe-orchestrator")
+        .join("claude");
+    if data_dir.exists() {
+        let _ = fs::remove_dir_all(&data_dir);
+        let _ = fs::create_dir_all(&data_dir);
+    }
+
+    CmdResult::success(())
+}
+
+#[tauri::command]
+pub fn open_in_browser(app: AppHandle, url: String) -> CmdResult<()> {
+    if let Err(e) = app.shell().open(url, None) {
+        return CmdResult::fail(format!("Failed to open browser: {e}"));
+    }
     CmdResult::success(())
 }

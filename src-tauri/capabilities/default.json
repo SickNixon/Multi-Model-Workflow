@@ -1,13 +1,14 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/schema/acl/capability.json",
+  "$schema": "../schemas/capabilities.json",
   "identifier": "default",
-  "description": "Default permissions for the orchestrator window",
-  "windows": ["orchestrator"],
+  "windows": ["main", "gemini", "deepseek", "grok", "claude"],
+  "remote": {
+    "urls": ["https://**", "http://**"]
+  },
   "permissions": [
-    "core:default",
-    "core:webview:allow-create-webview-window",
-    "core:event:allow-listen",
-    "core:event:allow-emit",
-    "shell:allow-open"
-  ]
+  "core:default",
+  "core:event:allow-emit",
+  "core:event:allow-listen",
+  "shell:allow-open"
+]
 }
