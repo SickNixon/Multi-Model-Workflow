@@ -1,11 +1,10 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema/acl/capability.json",
-  "identifier": "panels",
-  "description": "Permissions for AI panel WebView windows to report back via bridge_event",
+  "identifier": "ai-panels",
+  "description": "Permissions for AI panel WebViews — enables IPC back to the orchestrator via bridge_event",
   "windows": ["gemini", "deepseek", "grok", "claude"],
   "permissions": [
     "core:default",
-    "core:event:allow-emit",
-    "core:event:allow-listen"
+    "core:event:allow-emit"
   ]
 }

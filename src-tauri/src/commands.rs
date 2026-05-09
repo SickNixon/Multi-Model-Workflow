@@ -66,24 +66,30 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
 
     // Two-path report — covers all sites regardless of CSP strictness:
     //
-    // PRIMARY: plugin:event|emit — emits a Tauri event directly via the native
-    //   webkit.messageHandlers bridge. CSP CANNOT block this (it is not HTTP).
-    //   Bypasses our custom bridge_event command entirely, goes straight to the
-    //   Tauri event bus. React's listen() receives it instantly.
+    // PRIMARY: invoke('bridge_event') — custom app commands bypass Tauri's ACL
+    //   system entirely and work from ANY WebView, including external sites like
+    //   Gemini and Grok. Goes via webkit.messageHandlers (native bridge), which
+    //   CSP cannot block. The Rust handler calls app.emit() to broadcast to ALL
+    //   windows, so the React orchestrator window hears it via listen().
     //
-    // FALLBACK: image beacon — works for sites with permissive CSP (e.g. DeepSeek)
-    //   but blocked by Google/X CSP. Kept as backup.
-    const __TAURI_EVENTS = {{
-        output: 'panel:output', ready: 'panel:ready',
-        generating: 'panel:generating', error: 'panel:error',
-    }};
+    // WHY NOT plugin:event|emit: That is a Tauri plugin command — it requires
+    //   core:event:allow-emit in capabilities. Panel windows were not in any
+    //   capability, so it silently rejected → fell through to beacon → Gemini/Grok
+    //   CSP blocked the beacon → nothing. That was the entire bug.
+    //
+    // FALLBACK: image beacon — belt-and-suspenders if __TAURI_INTERNALS__ absent.
+    //   Still works for DeepSeek (permissive img-src CSP).
     function report(type, extra) {{
-        const tauriEvent = __TAURI_EVENTS[type];
-        if (tauriEvent && window.__TAURI_INTERNALS__?.invoke) {{
-            window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {{
-                event:   tauriEvent,
-                payload: {{ panel_id: PANEL_ID, output: extra?.output ?? null, message: extra?.message ?? null }},
-            }}).catch(() => reportViaBeacon(type, extra));
+        if (window.__TAURI_INTERNALS__?.invoke) {{
+            window.__TAURI_INTERNALS__.invoke('bridge_event', {{
+                event_type: type,
+                panel_id:   PANEL_ID,
+                output:     extra?.output ?? null,
+                message:    extra?.message ?? null,
+            }}).catch(err => {{
+                console.warn('[OrchestratorBridge] IPC invoke failed, falling back to beacon:', err);
+                reportViaBeacon(type, extra);
+            }});
             return;
         }}
         reportViaBeacon(type, extra);
@@ -106,7 +112,18 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
 
     {bridge_script}
 
-    function fireReady() {{ setTimeout(() => report('ready', {{}}), 1500); }}
+    function fireReady() {{
+        // Bridge can veto or override the ready signal by setting __readyCheck.
+        // Return true = proceed normally. Return string = report that as error msg.
+        // Return false = veto silently (bridge will fire ready itself when appropriate).
+        const check = window.__orchestratorBridge?.__readyCheck;
+        if (typeof check === 'function') {{
+            const result = check();
+            if (result === false) return;
+            if (typeof result === 'string') {{ report('error', {{ message: result }}); return; }}
+        }}
+        setTimeout(() => report('ready', {{}}), 1500);
+    }}
     if (document.readyState === 'complete') {{ fireReady(); }}
     else {{ window.addEventListener('load', fireReady); }}
 
@@ -155,6 +172,9 @@ fn build_init_script(panel_id: &str, bridge_script: &str) -> String {
 // ── Idle fallback timer ───────────────────────────────────────────────────────
 
 fn schedule_idle_fallback(app: AppHandle, panel_id: String) {
+    // Claude uses Cloudflare Turnstile — auto-promoting to READY is misleading.
+    // The JS fireReady() now handles it correctly via __readyCheck.
+    if panel_id == "claude" { return; }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
         let state = app.state::<AppState>();

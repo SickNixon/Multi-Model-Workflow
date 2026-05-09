@@ -14,6 +14,7 @@ interface OrchestratorStore {
   bridgePort:    number;
   isRefreshing:  boolean;
   sequenceIndex: number;
+  panelQueues:   Partial<Record<PanelId, string[]>>; // per-panel message queue for busy panels
 
   refreshPanels:      () => Promise<void>;
   openPanel:          (id: PanelId) => Promise<void>;
@@ -54,6 +55,7 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
   isRefreshing:  false,
   sequenceIndex: 0,
   loopActive:    false,
+  panelQueues:   {},
 
   refreshPanels: async () => {
     set({ isRefreshing: true });
@@ -125,15 +127,26 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
     }));
     const { routing, sequenceIndex, loopActive } = get();
 
+    // Send to next panel, or queue if it's currently generating
+    const relayToPanel = (targetId: PanelId, msg: string, routeLabel: string) => {
+      const targetStatus = get().panels[targetId]?.status?.status;
+      if (targetStatus === 'generating') {
+        set(s => ({
+          panelQueues: { ...s.panelQueues, [targetId]: [...(s.panelQueues[targetId] ?? []), msg] },
+          history: [...s.history, makeEntry(panelId, targetId, `→ queued for ${targetId.toUpperCase()} (busy)`)],
+        }));
+      } else {
+        void sendToPanel(targetId, msg);
+        set(s => ({ history: [...s.history, makeEntry(panelId, targetId, routeLabel)] }));
+      }
+    };
+
     if (routing.mode === 'sequential') {
       const idx = routing.targets.indexOf(panelId);
       if (idx !== -1 && idx === sequenceIndex && idx + 1 < routing.targets.length) {
         const next = routing.targets[idx + 1];
         set({ sequenceIndex: idx + 1 });
-        setTimeout(() => {
-          void sendToPanel(next, `[${panelId.toUpperCase()} said]:\n${output}`);
-          set(s => ({ history: [...s.history, makeEntry(panelId, next, `→ routing to ${next.toUpperCase()}`)] }));
-        }, 800);
+        setTimeout(() => relayToPanel(next, `[${panelId.toUpperCase()} said]:\n${output}`, `→ routing to ${next.toUpperCase()}`), 800);
       }
     }
 
@@ -142,18 +155,24 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
       if (idx !== -1) {
         const nextIdx = (idx + 1) % routing.targets.length;
         const next = routing.targets[nextIdx];
-        // Brief pause so the user can see the response before the next fires
         setTimeout(() => {
-          if (!get().loopActive) return; // user stopped the loop
-          const msg = `[${panelId.toUpperCase()} said]:\n${output.slice(0, 2000)}`;
-          void sendToPanel(next, msg);
-          set(s => ({ history: [...s.history, makeEntry(panelId, next, `→ loop → ${next.toUpperCase()}`)] }));
+          if (!get().loopActive) return;
+          relayToPanel(next, `[${panelId.toUpperCase()} said]:\n${output.slice(0, 2000)}`, `→ loop → ${next.toUpperCase()}`);
         }, 1500);
       }
     }
   },
 
-  onPanelReady:      (id) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'idle' } } } })),
+  onPanelReady: (id) => {
+    set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'idle' } } } }));
+    // Drain the queue — if a relay was waiting for this panel to be free, send it now
+    const queue = get().panelQueues[id as PanelId];
+    if (queue && queue.length > 0) {
+      const [nextMsg, ...rest] = queue;
+      set(s => ({ panelQueues: { ...s.panelQueues, [id]: rest } }));
+      setTimeout(() => void sendToPanel(id as PanelId, nextMsg), 400);
+    }
+  },
   onPanelGenerating: (id) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'generating' } } } })),
   onPanelError:      (id, message) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'error', message } } } })),
 

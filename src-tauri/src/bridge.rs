@@ -510,5 +510,22 @@ const CLAUDE_BRIDGE: &str = r#"
         if (!outputEl) console.error('[OrchestratorBridge:claude] output not found');
         window.__orchestratorBridge.report('output', { output });
     }
+
+    // ── Cloudflare Turnstile detection ────────────────────────────────────────
+    // Called by the shared fireReady() before emitting the ready signal.
+    // Returns: true = go ahead | string = report as error | false = veto silently
+    window.__orchestratorBridge.__readyCheck = function() {
+        const isChallenge =
+            !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+            !!document.querySelector('#challenge-form') ||
+            document.title === 'Just a moment...' ||
+            document.title.startsWith('Checking your browser');
+        if (isChallenge) {
+            console.warn('[OrchestratorBridge:claude] Cloudflare challenge detected — vetoing ready');
+            return 'click VIEW → complete verification → click HIDE';
+        }
+        console.log('[OrchestratorBridge:claude] past Cloudflare — firing ready');
+        return true;
+    };
 })();
 "#;
