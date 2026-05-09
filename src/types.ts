@@ -73,7 +73,8 @@ export const TAURI_EVENTS = {
 export type RoutingMode =
   | 'broadcast'   // send to all active panels simultaneously
   | 'sequential'  // send to first, route its output to next, etc.
-  | 'single';     // send to one specific panel
+  | 'single'      // send to one specific panel
+  | 'loop';       // cyclic chat: each model's output feeds the next, endlessly
 
 export interface RoutingConfig {
   mode:    RoutingMode;

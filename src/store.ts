@@ -26,6 +26,8 @@ interface OrchestratorStore {
   onPanelReady:       (panelId: PanelId) => void;
   onPanelGenerating:  (panelId: PanelId) => void;
   onPanelError:       (panelId: PanelId, message: string) => void;
+  loopActive:         boolean;
+  stopLoop:           () => void;
   setPromptDraft:     (text: string) => void;
   appendPromptDraft:  (text: string) => void;
   setRouting:         (config: Partial<RoutingConfig>) => void;
@@ -51,6 +53,7 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
   bridgePort:    7539,
   isRefreshing:  false,
   sequenceIndex: 0,
+  loopActive:    false,
 
   refreshPanels: async () => {
     set({ isRefreshing: true });
@@ -84,6 +87,10 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
     } else if (routing.mode === 'sequential') {
       set({ sequenceIndex: 0 });
       if (routing.targets.length > 0) await sendToPanel(routing.targets[0], text);
+    } else if (routing.mode === 'loop') {
+      // Start the loop: activate it, send to first target only
+      set({ loopActive: true });
+      if (routing.targets.length > 0) await sendToPanel(routing.targets[0], text);
     } else {
       if (routing.targets.length > 0) await sendToPanel(routing.targets[0], text);
     }
@@ -96,7 +103,8 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
       history: [...state.history, entry],
       panels: { ...state.panels, [panelId]: { ...state.panels[panelId], status: { status: 'done' }, last_output: output } },
     }));
-    const { routing, sequenceIndex } = get();
+    const { routing, sequenceIndex, loopActive } = get();
+
     if (routing.mode === 'sequential') {
       const idx = routing.targets.indexOf(panelId);
       if (idx !== -1 && idx === sequenceIndex && idx + 1 < routing.targets.length) {
@@ -108,12 +116,28 @@ export const useStore = create<OrchestratorStore>((set, get) => ({
         }, 800);
       }
     }
+
+    if (routing.mode === 'loop' && loopActive && routing.targets.length > 1) {
+      const idx = routing.targets.indexOf(panelId);
+      if (idx !== -1) {
+        const nextIdx = (idx + 1) % routing.targets.length;
+        const next = routing.targets[nextIdx];
+        // Brief pause so the user can see the response before the next fires
+        setTimeout(() => {
+          if (!get().loopActive) return; // user stopped the loop
+          const msg = `[${panelId.toUpperCase()} said]:\n${output.slice(0, 2000)}`;
+          void sendToPanel(next, msg);
+          set(s => ({ history: [...s.history, makeEntry(panelId, next, `→ loop → ${next.toUpperCase()}`)] }));
+        }, 1500);
+      }
+    }
   },
 
   onPanelReady:      (id) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'idle' } } } })),
   onPanelGenerating: (id) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'generating' } } } })),
   onPanelError:      (id, message) => set(s => ({ panels: { ...s.panels, [id]: { ...s.panels[id], status: { status: 'error', message } } } })),
 
+  stopLoop:          ()      => set({ loopActive: false }),
   setPromptDraft:    (text)  => set({ promptDraft: text }),
   appendPromptDraft: (text)  => set(s => ({ promptDraft: s.promptDraft + (s.promptDraft && !s.promptDraft.endsWith(' ') ? ' ' : '') + text })),
   setRouting:        (cfg)   => set(s => ({ routing: { ...s.routing, ...cfg } })),

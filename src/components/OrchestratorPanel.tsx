@@ -116,11 +116,14 @@ function RoutingSelector() {
   const routing    = useStore(s => s.routing);
   const setRouting = useStore(s => s.setRouting);
   const panels     = useStore(s => s.panels);
+  const loopActive = useStore(s => s.loopActive);
+  const stopLoop   = useStore(s => s.stopLoop);
 
-  const modes: { id: RoutingMode; label: string }[] = [
-    { id: 'broadcast',  label: 'BROADCAST' },
-    { id: 'sequential', label: 'SEQUENCE' },
-    { id: 'single',     label: 'SINGLE' },
+  const modes: { id: RoutingMode; label: string; title: string }[] = [
+    { id: 'broadcast',  label: 'BROADCAST', title: 'Send to all panels at once' },
+    { id: 'sequential', label: 'SEQUENCE',  title: 'Chain: A → B → C (one pass)' },
+    { id: 'loop',       label: '⟳ LOOP',    title: 'Continuous AI chat: models talk to each other until you stop' },
+    { id: 'single',     label: 'SINGLE',    title: 'Send to one panel only' },
   ];
 
   const toggleTarget = (id: PanelId) => {
@@ -132,15 +135,31 @@ function RoutingSelector() {
 
   return (
     <div style={styles.routingBox}>
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' as const }}>
         {modes.map(m => (
           <button key={m.id}
             className={routing.mode === m.id ? 'btn-primary' : 'btn-ghost'}
-            style={{ fontSize: 10, padding: '4px 10px' }}
+            style={{ fontSize: 10, padding: '4px 10px',
+              ...(m.id === 'loop' && routing.mode === 'loop' ? { background: 'var(--amber)', borderColor: 'var(--amber)', color: 'var(--bg-void)' } : {}) }}
+            title={m.title}
             onClick={() => setRouting({ mode: m.id })}>
             {m.label}
           </button>
         ))}
+        {routing.mode === 'loop' && loopActive && (
+          <button
+            onClick={stopLoop}
+            style={{ fontSize: 10, padding: '4px 10px', background: 'var(--red)',
+              color: '#fff', border: '1px solid var(--red)', borderRadius: 3, cursor: 'pointer',
+              animationName: 'pulse-amber', animationDuration: '1s', animationIterationCount: 'infinite' }}>
+            ⏹ STOP LOOP
+          </button>
+        )}
+        {routing.mode === 'loop' && !loopActive && (
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+            send a prompt to start the loop
+          </span>
+        )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const }}>
         <span style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.1em', marginRight: 4 }}>TO:</span>
